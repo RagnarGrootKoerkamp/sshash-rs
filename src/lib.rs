@@ -232,14 +232,9 @@ mod test {
     use super::*;
     use naive::*;
 
-    #[test]
-    fn positive_queries() {
+    fn test_pos(minimizer: impl Minimizer, phf_builder: impl PhfBuilder<u64>) {
         let text = (0..100000).map(|_| rand::random::<u8>()).collect_vec();
-        let k = 21;
-        let w = 11;
-        let l = 31;
-        let minimizer = NaiveMinimizer { k, w };
-        let phf_builder = NaivePhfBuilder::new();
+        let l = minimizer.k() + minimizer.w() - 1;
         let sshash = SsHash::build(&[&text], minimizer, phf_builder);
 
         // The alphabet is large enough that we assume no duplicate k-mers occur.
@@ -248,22 +243,51 @@ mod test {
         }
     }
 
-    #[test]
-    fn negative_queries() {
+    fn test_neg(minimizer: impl Minimizer, phf_builder: impl PhfBuilder<u64>) {
         let text = (0..100000).map(|_| rand::random::<u8>()).collect_vec();
-        let k = 21;
-        let w = 11;
-        let l = 31;
-        let minimizer = NaiveMinimizer { k, w };
-        let phf_builder = NaivePhfBuilder::new();
+        let l = minimizer.k() + minimizer.w() - 1;
         let sshash = SsHash::build(&[&text], minimizer, phf_builder);
 
+        // The alphabet is large enough that we assume no duplicate k-mers occur.
         for _ in 0..text.len() {
             let window = (0..l).map(|_| rand::random::<u8>()).collect_vec();
             assert_eq!(sshash.query_one(&window), None);
         }
     }
 
+    #[test]
+    fn naive_pos() {
+        let minimizer = NaiveMinimizer { k: 7, w: 11 };
+        let phf_builder = NaivePhfBuilder::new();
+        test_pos(minimizer, phf_builder);
+    }
+
+    #[test]
+    fn naive_neg() {
+        let minimizer = NaiveMinimizer { k: 7, w: 11 };
+        let phf_builder = NaivePhfBuilder::new();
+        test_neg(minimizer, phf_builder);
+    }
+
+    #[test]
+    fn ptrhash_pos() {
+        let minimizer = NaiveMinimizer { k: 7, w: 11 };
+        let phf_builder = ptr_hash::PtrHashParams {
+            remap: false,
+            ..Default::default()
+        };
+        test_pos(minimizer, phf_builder);
+    }
+
+    #[test]
+    fn ptrhash_neg() {
+        let minimizer = NaiveMinimizer { k: 7, w: 11 };
+        let phf_builder = ptr_hash::PtrHashParams {
+            remap: false,
+            ..Default::default()
+        };
+        test_neg(minimizer, phf_builder);
+    }
     #[ignore]
     #[test]
     fn print_size() {
