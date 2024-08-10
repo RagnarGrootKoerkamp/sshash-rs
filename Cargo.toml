@@ -10,6 +10,7 @@ itertools = "0.13.0"
 size = "0.4.1"
 sux = { version = "0.4.1", git = "https://github.com/vigna/sux-rs" }
 ptr_hash = { git = "https://github.com/RagnarGrootKoerkamp/ptrhash" }
+minimizers = { git = "https://github.com/RagnarGrootKoerkamp/minimizers" }
 
 [dev-dependencies]
 rand = "0.8.5"

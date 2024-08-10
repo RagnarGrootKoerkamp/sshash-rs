@@ -48,6 +48,36 @@ pub trait Minimizer {
     }
 }
 
+pub struct NtMinimizer {
+    pub k: usize,
+    pub w: usize,
+}
+
+impl Minimizer for NtMinimizer {
+    fn minimizer_one(&self, window: &[u8]) -> (usize, u64) {
+        let pos = minimizers::par::minimizer::minimizer_window(window, self.k);
+        let val = u64::from_ne_bytes(*window[pos..].split_first_chunk::<8>().unwrap().0)
+            & ((1u64 << (8 * self.k)) - 1);
+        (pos, val)
+    }
+
+    fn minimizers(&self, text: &[u8]) -> impl Iterator<Item = (usize, u64)> {
+        minimizers::par::minimizer::minimizer_scalar_it(text, self.k, self.w).map(|pos| {
+            let val = u64::from_ne_bytes(*text[pos as usize..].split_first_chunk::<8>().unwrap().0)
+                & ((1u64 << (8 * self.k)) - 1);
+            (pos as usize, val)
+        })
+    }
+
+    fn k(&self) -> usize {
+        self.k
+    }
+
+    fn w(&self) -> usize {
+        self.w
+    }
+}
+
 pub struct SsHash<H: Phf<u64>, M: Minimizer> {
     minimizer: M,
     text: Vec<u8>,         // Todo bitpacked
@@ -288,6 +318,27 @@ mod test {
         };
         test_neg(minimizer, phf_builder);
     }
+
+    #[test]
+    fn ntmini_pos() {
+        let minimizer = NtMinimizer { k: 7, w: 11 };
+        let phf_builder = ptr_hash::PtrHashParams {
+            remap: false,
+            ..Default::default()
+        };
+        test_pos(minimizer, phf_builder);
+    }
+
+    #[test]
+    fn ntmini_neg() {
+        let minimizer = NtMinimizer { k: 7, w: 11 };
+        let phf_builder = ptr_hash::PtrHashParams {
+            remap: false,
+            ..Default::default()
+        };
+        test_neg(minimizer, phf_builder);
+    }
+
     #[ignore]
     #[test]
     fn print_size() {
