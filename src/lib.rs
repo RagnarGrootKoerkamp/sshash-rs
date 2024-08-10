@@ -9,6 +9,7 @@ pub trait PhfBuilder<T> {
 pub trait Phf<T> {
     fn hash(&self, key: T) -> Option<usize>; // hash
     fn max(&self) -> usize; // upper bound on hashes
+    fn size(&self) -> usize;
 }
 
 pub trait Minimizer {
@@ -25,6 +26,7 @@ pub struct SsHash<H: Phf<u64>, M: Minimizer> {
     minimizer: M,
     text: Vec<u8>,         // Todo bitpacked
     endpoints: Vec<usize>, // Todo EF
+    num_uniq_minis: usize,
     phf: H,
     sizes: Vec<usize>,   // Todo EF
     offsets: Vec<usize>, // Todo CompactVec
@@ -46,6 +48,7 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
         minis.sort_by_key(|x| x.1);
         // Todo: is passing an iterator to the phf builder sufficient?
         let uniq_mini_vals = minis.iter().map(|x| x.1).dedup().collect_vec();
+        let num_uniq_minis = uniq_mini_vals.len();
         let phf = phf_builder.build(&uniq_mini_vals);
         let mut sizes = vec![0; phf.max() + 1];
         for (mini_val, chunk) in minis.iter().chunk_by(|x| x.1).into_iter() {
@@ -76,10 +79,85 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
             minimizer,
             text,
             endpoints,
+            num_uniq_minis,
             phf,
             sizes,
             offsets,
         }
+    }
+
+    pub fn print_size(&self) {
+        use size::Size;
+        use std::mem::size_of_val;
+        // All sizes in bytes.
+        let text = size_of_val(self.text.as_slice());
+        let endpoints = size_of_val(self.endpoints.as_slice());
+        let phf = self.phf.size();
+        let sizes = size_of_val(self.sizes.as_slice());
+        let offsets = size_of_val(self.offsets.as_slice());
+        let total = text + endpoints + phf + sizes + offsets;
+
+        let num_bp = self.text.len() as f32;
+        let num_minis = self.offsets.len() as f32;
+
+        eprintln!(
+            "part       {:>10} {:>10} {:>10} {:>10} {:>10} {:>10}",
+            "len", "max", "memory", "bits/kmer", "bits/mini", "bits/uniq mini"
+        );
+        eprintln!(
+            "text:      {:>10} {:>10} {:>10} {:>10.1} {:>10.1} {:>10.1}",
+            self.text.len(),
+            3,
+            format!("{}", Size::from_bytes(text)),
+            8. * text as f32 / num_bp,
+            8. * text as f32 / num_minis,
+            8. * text as f32 / self.num_uniq_minis as f32
+        );
+        eprintln!(
+            "endpoints: {:>10} {:>10} {:>10} {:>10.1} {:>10.1} {:>10.1}",
+            self.endpoints.len(),
+            self.endpoints.last().unwrap(),
+            format!("{}", Size::from_bytes(endpoints)),
+            8. * endpoints as f32 / num_bp,
+            8. * endpoints as f32 / num_minis,
+            8. * endpoints as f32 / self.num_uniq_minis as f32
+        );
+        eprintln!(
+            "phf:       {:>10} {:>10} {:>10} {:>10.1} {:>10.1} {:>10.1}",
+            self.num_uniq_minis,
+            self.phf.max(),
+            format!("{}", Size::from_bytes(phf)),
+            8. * phf as f32 / num_bp,
+            8. * phf as f32 / num_minis,
+            8. * phf as f32 / self.num_uniq_minis as f32
+        );
+        eprintln!(
+            "sizes:     {:>10} {:>10} {:>10} {:>10.1} {:>10.1} {:>10.1}",
+            self.sizes.len(),
+            self.sizes[self.phf.max()],
+            format!("{}", Size::from_bytes(sizes)),
+            8. * sizes as f32 / num_bp,
+            8. * sizes as f32 / num_minis,
+            8. * sizes as f32 / self.num_uniq_minis as f32
+        );
+        eprintln!(
+            "offsets:   {:>10} {:>10} {:>10} {:>10.1} {:>10.1} {:>10.1}",
+            self.offsets.len(),
+            self.text.len(),
+            format!("{}", Size::from_bytes(offsets)),
+            8. * offsets as f32 / num_bp,
+            8. * offsets as f32 / num_minis,
+            8. * offsets as f32 / self.num_uniq_minis as f32
+        );
+        eprintln!(
+            "total:     {:>10} {:>10} {:>10} {:>10.1} {:>10.1} {:>10.1}",
+            "",
+            "",
+            format!("{}", Size::from_bytes(total)),
+            8. * total as f32 / num_bp,
+            8. * total as f32 / num_minis,
+            8. * total as f32 / self.num_uniq_minis as f32
+        );
     }
 
     pub fn query_one(&self, window: &[u8]) -> Option<(usize, usize)> {
@@ -148,5 +226,17 @@ mod test {
             let window = (0..l).map(|_| rand::random::<u8>()).collect_vec();
             assert_eq!(sshash.query_one(&window), None);
         }
+    }
+
+    #[ignore]
+    #[test]
+    fn print_size() {
+        let text = (0..1000000).map(|_| rand::random::<u8>()).collect_vec();
+        let k = 21;
+        let w = 11;
+        let minimizer = NaiveMinimizer { k, w };
+        let phf_builder = NaivePhfBuilder::new();
+        let sshash = SsHash::build(&[&text], minimizer, phf_builder);
+        sshash.print_size();
     }
 }

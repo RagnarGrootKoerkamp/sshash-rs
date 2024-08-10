@@ -36,6 +36,10 @@ impl<T: Hash + Eq> Phf<T> for NaivePhf<T> {
     fn max(&self) -> usize {
         self.hashmap.len()
     }
+
+    fn size(&self) -> usize {
+        self.hashmap.capacity() * (std::mem::size_of::<T>() + std::mem::size_of::<usize>())
+    }
 }
 
 pub struct NaiveMinimizer {
