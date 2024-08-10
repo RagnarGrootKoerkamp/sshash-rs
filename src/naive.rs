@@ -48,23 +48,23 @@ pub struct NaiveMinimizer {
 }
 
 impl Minimizer for NaiveMinimizer {
-    fn minimizer_one(&self, window: &[u8]) -> (usize, u64) {
+    fn minimizer_one(&self, window: impl IntoBpIterator) -> (usize, u64) {
         assert_eq!(window.len(), self.l());
-        window
-            .windows(self.k)
-            .enumerate()
-            .map(|(i, kmer)| {
-                let hash = fxhash::hash64(kmer);
+        (0..self.w)
+            .map(|i| {
+                let kmer = window.sub_slice(i, self.k).to_word();
+                let hash = fxhash::hash64(&kmer);
                 (i, hash)
             })
             .min_by_key(|&(_, hash)| hash)
             .unwrap()
     }
 
-    fn minimizers(&self, text: &[u8]) -> impl Iterator<Item = (usize, u64)> {
-        text.windows(self.l()).enumerate().map(|(j, window)| {
+    fn minimizers(&self, text: impl IntoBpIterator) -> impl Iterator<Item = (usize, u64)> {
+        (0..text.len() - self.l() + 1).map(move |i| {
+            let window = text.sub_slice(i, self.l());
             let (pos, val) = self.minimizer_one(window);
-            (j + pos, val)
+            (i + pos, val)
         })
     }
 

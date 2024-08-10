@@ -1,5 +1,6 @@
 use itertools::Itertools;
-use std::cmp::Ordering;
+use minimizers::par::packed::{IntoBpIterator, Packed};
+use std::{cmp::Ordering, ops::Range};
 use sux::{
     bit_field_vec,
     dict::EliasFano,
@@ -39,12 +40,94 @@ impl<T: ptr_hash::KeyT> Phf<T> for ptr_hash::PtrHash<T> {
 }
 
 pub trait Minimizer {
-    fn minimizer_one(&self, window: &[u8]) -> (usize, u64); // (pos, value)
-    fn minimizers(&self, text: &[u8]) -> impl Iterator<Item = (usize, u64)>; // (pos, value)
+    fn minimizer_one(&self, window: impl IntoBpIterator) -> (usize, u64); // (pos, value)
+    fn minimizers(&self, text: impl IntoBpIterator) -> impl Iterator<Item = (usize, u64)>; // (pos, value)
     fn k(&self) -> usize;
     fn w(&self) -> usize;
     fn l(&self) -> usize {
         self.k() + self.w() - 1
+    }
+}
+
+pub trait BpStorage {
+    type BpSlice<'a>: IntoBpIterator
+    where
+        Self: 'a;
+    fn concat(data: &[&Self]) -> Self;
+    fn get(&self) -> Self::BpSlice<'_>;
+    fn slice(&self, range: Range<usize>) -> Self::BpSlice<'_>;
+    fn size(&self) -> usize;
+    #[cfg(test)]
+    fn random(n: usize, alphabet: usize) -> Self;
+}
+
+impl BpStorage for Vec<u8> {
+    type BpSlice<'a> = &'a [u8];
+
+    fn concat(data: &[&Self]) -> Self {
+        let data = data.iter().map(|x| x.as_slice()).collect_vec();
+        data.concat()
+    }
+    fn get(&self) -> Self::BpSlice<'_> {
+        &*self
+    }
+    fn slice(&self, range: Range<usize>) -> Self::BpSlice<'_> {
+        &self[range]
+    }
+    fn size(&self) -> usize {
+        size_of_val(self.as_slice())
+    }
+    #[cfg(test)]
+    fn random(n: usize, alphabet: usize) -> Self {
+        (0..n)
+            .map(|_| ((rand::random::<u8>() as usize) % alphabet) as u8)
+            .collect_vec()
+    }
+}
+
+#[derive(Debug)]
+pub struct PackedVec {
+    pub seq: Vec<u8>,
+    pub len: usize,
+}
+
+impl BpStorage for PackedVec {
+    type BpSlice<'a> = Packed<'a>;
+
+    fn concat(seqs: &[&Self]) -> Self {
+        let mut seq = vec![];
+        seq.reserve(seqs.iter().map(|p| p.seq.len()).sum::<usize>());
+        seq.extend(seqs.iter().flat_map(|p| p.seq.iter()));
+        let len = seqs.iter().map(|x| x.get().len()).sum::<usize>();
+        Self { seq, len }
+    }
+
+    fn get(&self) -> Self::BpSlice<'_> {
+        Packed {
+            seq: &self.seq,
+            offset: 0,
+            len: self.len,
+        }
+    }
+    fn slice(&self, range: Range<usize>) -> Self::BpSlice<'_> {
+        let mut p = Packed {
+            seq: &self.seq,
+            offset: range.start,
+            len: range.len(),
+        };
+        p.normalize();
+        p
+    }
+    fn size(&self) -> usize {
+        size_of_val(self.seq.as_slice())
+    }
+    #[cfg(test)]
+    fn random(n: usize, alphabet: usize) -> Self {
+        assert!(alphabet == 4);
+        let seq = (0..n.div_ceil(4))
+            .map(|_| rand::random::<u8>())
+            .collect_vec();
+        PackedVec { seq, len: n }
     }
 }
 
@@ -54,19 +137,19 @@ pub struct NtMinimizer {
 }
 
 impl Minimizer for NtMinimizer {
-    fn minimizer_one(&self, window: &[u8]) -> (usize, u64) {
-        let pos = minimizers::par::minimizer::minimizer_window(window, self.k);
-        let mask = u64::MAX >> (64 - 8 * self.k);
-        let val = unsafe { *(window.as_ptr().offset(pos as isize) as *const u64) & mask };
+    fn minimizer_one(&self, window: impl IntoBpIterator) -> (usize, u64) {
+        let pos = minimizers::par::minimizer::minimizer_window::<false>(window, self.k);
+        let val = window.sub_slice(pos, self.k).to_word() as u64;
         (pos, val)
     }
 
-    fn minimizers(&self, text: &[u8]) -> impl Iterator<Item = (usize, u64)> {
-        let mask = u64::MAX >> (64 - 8 * self.k);
-        minimizers::par::minimizer::minimizer_scalar_it(text, self.k, self.w).map(move |pos| {
-            let val = unsafe { *(text.as_ptr().offset(pos as isize) as *const u64) & mask };
-            (pos as usize, val)
-        })
+    fn minimizers(&self, text: impl IntoBpIterator) -> impl Iterator<Item = (usize, u64)> {
+        minimizers::par::minimizer::minimizer_scalar_it::<false>(text, self.k, self.w).map(
+            move |pos| {
+                let val = text.sub_slice(pos as usize, self.k).to_word() as u64;
+                (pos as usize, val)
+            },
+        )
     }
 
     fn k(&self) -> usize {
@@ -78,9 +161,9 @@ impl Minimizer for NtMinimizer {
     }
 }
 
-pub struct SsHash<H: Phf<u64>, M: Minimizer> {
+pub struct SsHash<H: Phf<u64>, M: Minimizer, P: BpStorage> {
     minimizer: M,
-    text: Vec<u8>,         // Todo bitpacked
+    text: P,               // Todo bitpacked
     endpoints: Vec<usize>, // Todo EF
     num_uniq_minis: usize,
     phf: H,
@@ -88,19 +171,19 @@ pub struct SsHash<H: Phf<u64>, M: Minimizer> {
     offsets: sux::bits::BitFieldVec,
 }
 
-impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
-    pub fn build(text: &[&[u8]], minimizer: M, phf_builder: impl PhfBuilder<u64, Phf = H>) -> Self {
+impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
+    pub fn build(text: &[&P], minimizer: M, phf_builder: impl PhfBuilder<u64, Phf = H>) -> Self {
         let endpoints = text
             .iter()
             .scan(0, |acc, x| {
-                *acc += x.len();
+                *acc += x.get().len().next_multiple_of(4);
                 Some(*acc)
             })
             .collect_vec();
-        let text = text.concat();
+        let text = P::concat(text);
 
         // Todo split at input seq boundaries
-        let mut minis = minimizer.minimizers(&text).dedup().collect_vec();
+        let mut minis = minimizer.minimizers(text.get()).dedup().collect_vec();
         minis.sort_by_key(|x| x.1);
         // Todo: is passing an iterator to the phf builder sufficient?
         let uniq_mini_vals = minis.iter().map(|x| x.1).dedup().collect_vec();
@@ -126,7 +209,7 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
             sizes_ef.push(size);
         }
 
-        let offset_bits = text.len().ilog2() as usize + 1;
+        let offset_bits = text.get().len().ilog2() as usize + 1;
         let mut offsets = bit_field_vec![offset_bits; minis.len(); 0];
         for (mini_val, chunk) in minis.iter().chunk_by(|x| x.1).into_iter() {
             if let Some(hash) = phf.hash(mini_val) {
@@ -155,7 +238,7 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
         use size::Size;
         use std::mem::size_of_val;
         // All sizes in bytes.
-        let text = size_of_val(self.text.as_slice());
+        let text = self.text.size();
         let endpoints = size_of_val(self.endpoints.as_slice());
         let phf = self.phf.size();
         // TODO: Include size of rank-select structures.
@@ -163,7 +246,7 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
         let offsets = self.offsets.len() * self.offsets.bit_width() / 8;
         let total = text + endpoints + phf + sizes + offsets;
 
-        let num_bp = self.text.len() as f32;
+        let num_bp = self.text.get().len() as f32;
         let num_minis = self.offsets.len() as f32;
 
         eprintln!(
@@ -172,7 +255,7 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
         );
         eprintln!(
             "text:      {:>10} {:>10} {:>10} {:>10.1} {:>10.1} {:>10.1}",
-            self.text.len(),
+            self.text.get().len(),
             3,
             format!("{}", Size::from_bytes(text)),
             8. * text as f32 / num_bp,
@@ -209,7 +292,7 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
         eprintln!(
             "offsets:   {:>10} {:>10} {:>10} {:>10.1} {:>10.1} {:>10.1}",
             self.offsets.len(),
-            self.text.len(),
+            self.text.get().len(),
             format!("{}", Size::from_bytes(offsets)),
             8. * offsets as f32 / num_bp,
             8. * offsets as f32 / num_minis,
@@ -226,7 +309,7 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
         );
     }
 
-    pub fn query_one(&self, window: &[u8]) -> Option<(usize, usize)> {
+    pub fn query_one(&self, window: P::BpSlice<'_>) -> Option<(usize, usize)> {
         let (minimizer_pos, minimizer) = self.minimizer.minimizer_one(window);
         let hash: usize = self.phf.hash(minimizer)?;
         let offsets_start = self.sizes.get(hash) as usize;
@@ -237,11 +320,11 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
                 continue;
             }
             let lmer_pos = offset as usize - minimizer_pos;
-            if lmer_pos + self.minimizer.l() > self.text.len() {
+            if lmer_pos + self.minimizer.l() > self.text.get().len() {
                 continue;
             }
-            let lmer = &self.text[lmer_pos..lmer_pos + self.minimizer.l()];
-            if lmer == window {
+            let lmer = &self.text.slice(lmer_pos..lmer_pos + self.minimizer.l());
+            if lmer.to_word() == window.to_word() {
                 return Some((
                     lmer_pos,
                     self.endpoints
@@ -268,110 +351,115 @@ mod test {
     use super::*;
     use naive::*;
 
-    fn test_pos(minimizer: impl Minimizer, phf_builder: impl PhfBuilder<u64>, alphabet: usize) {
-        let text = (0..10000)
-            .map(|_| (rand::random::<u8>() as usize % alphabet) as u8)
-            .collect_vec();
+    fn test_pos<P: BpStorage>(
+        minimizer: impl Minimizer,
+        phf_builder: impl PhfBuilder<u64>,
+        alphabet: usize,
+    ) {
+        let n = 100;
+        let text = P::random(n, alphabet);
         let l = minimizer.k() + minimizer.w() - 1;
         let sshash = SsHash::build(&[&text], minimizer, phf_builder);
 
         // The alphabet is large enough that we assume no duplicate k-mers occur.
-        for (i, window) in text.windows(l).enumerate() {
+        for i in 0..text.get().len() - l {
+            let window = text.slice(i..i + l);
             assert_eq!(sshash.query_one(window), Some((i, 0)));
         }
     }
 
-    fn test_neg(minimizer: impl Minimizer, phf_builder: impl PhfBuilder<u64>, alphabet: usize) {
-        let text = (0..10000)
-            .map(|_| (rand::random::<u8>() as usize % alphabet) as u8)
-            .collect_vec();
-        let l = minimizer.k() + minimizer.w() - 1;
+    fn test_neg<P: BpStorage + std::fmt::Debug>(
+        minimizer: impl Minimizer,
+        phf_builder: impl PhfBuilder<u64>,
+        alphabet: usize,
+    ) {
+        let n = 10000;
+        let text = P::random(n, alphabet);
+        let l = minimizer.l();
         let sshash = SsHash::build(&[&text], minimizer, phf_builder);
 
         // The alphabet is large enough that we assume no duplicate k-mers occur.
-        for _ in 0..text.len() {
-            let window = (0..l)
-                .map(|_| (rand::random::<u8>() as usize % alphabet) as u8)
-                .collect_vec();
-            assert_eq!(sshash.query_one(&window), None);
+        for _ in 0..text.get().len() {
+            let window = P::random(l, alphabet);
+            assert_eq!(sshash.query_one(window.get()), None);
         }
     }
 
     #[test]
     fn naive_pos() {
-        let minimizer = NaiveMinimizer { k: 7, w: 11 };
+        let minimizer = NaiveMinimizer { k: 6, w: 3 };
         let phf_builder = NaivePhfBuilder::new();
-        test_pos(minimizer, phf_builder, 256);
+        test_pos::<Vec<_>>(minimizer, phf_builder, 256);
     }
 
     #[test]
     fn naive_neg() {
-        let minimizer = NaiveMinimizer { k: 7, w: 11 };
+        let minimizer = NaiveMinimizer { k: 6, w: 3 };
         let phf_builder = NaivePhfBuilder::new();
-        test_neg(minimizer, phf_builder, 256);
+        test_neg::<Vec<_>>(minimizer, phf_builder, 256);
     }
 
     #[test]
     fn ptrhash_pos() {
-        let minimizer = NaiveMinimizer { k: 7, w: 11 };
+        let minimizer = NaiveMinimizer { k: 6, w: 3 };
         let phf_builder = ptr_hash::PtrHashParams {
             remap: false,
             ..Default::default()
         };
-        test_pos(minimizer, phf_builder, 256);
+        test_pos::<Vec<_>>(minimizer, phf_builder, 256);
     }
 
     #[test]
     fn ptrhash_neg() {
-        let minimizer = NaiveMinimizer { k: 8, w: 11 };
+        let minimizer = NaiveMinimizer { k: 6, w: 3 };
         let phf_builder = ptr_hash::PtrHashParams {
             remap: false,
             ..Default::default()
         };
-        test_neg(minimizer, phf_builder, 256);
+        test_neg::<Vec<_>>(minimizer, phf_builder, 256);
     }
 
     #[test]
-    fn ntmini_pos() {
-        let minimizer = NtMinimizer { k: 8, w: 11 };
+    fn ntmini_pos_packed() {
+        let minimizer = NtMinimizer { k: 19, w: 11 };
         let phf_builder = NaivePhfBuilder::new();
-        test_pos(minimizer, phf_builder, 4);
+        test_pos::<PackedVec>(minimizer, phf_builder, 4);
     }
 
     #[test]
-    fn ntmini_neg() {
-        let minimizer = NtMinimizer { k: 8, w: 11 };
+    fn ntmini_neg_packed() {
+        let minimizer = NtMinimizer { k: 19, w: 11 };
         let phf_builder = NaivePhfBuilder::new();
-        test_neg(minimizer, phf_builder, 4);
+        test_neg::<PackedVec>(minimizer, phf_builder, 4);
     }
 
     #[test]
-    fn ntmini_ptrhash_pos() {
-        let minimizer = NtMinimizer { k: 8, w: 11 };
+    fn ntmini_ptrhash_pos_packed() {
+        let minimizer = NtMinimizer { k: 19, w: 11 };
         let phf_builder = ptr_hash::PtrHashParams {
             remap: false,
             ..Default::default()
         };
-        test_pos(minimizer, phf_builder, 4);
+        test_pos::<PackedVec>(minimizer, phf_builder, 4);
     }
 
     #[test]
-    fn ntmini_ptrhash_neg() {
-        let minimizer = NtMinimizer { k: 8, w: 11 };
+    fn ntmini_ptrhash_neg_packed() {
+        let minimizer = NtMinimizer { k: 19, w: 11 };
         let phf_builder = ptr_hash::PtrHashParams {
             remap: false,
             ..Default::default()
         };
-        test_neg(minimizer, phf_builder, 4);
+        test_neg::<PackedVec>(minimizer, phf_builder, 4);
     }
 
     #[ignore]
     #[test]
     fn print_size() {
-        let text = (0..10000000).map(|_| rand::random::<u8>()).collect_vec();
+        let text = PackedVec::random(10000000, 4);
         let k = 21;
         let w = 11;
-        let minimizer = NaiveMinimizer { k, w };
+        let minimizer = NtMinimizer { k, w };
         let phf_builder = ptr_hash::PtrHashParams {
             remap: false,
             ..Default::default()
