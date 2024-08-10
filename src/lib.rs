@@ -468,4 +468,62 @@ mod test {
         let sshash = SsHash::build(&[&text], minimizer, phf_builder);
         sshash.print_size();
     }
+
+    #[ignore]
+    #[test]
+    fn print_size_hg() {
+        eprintln!("Reading..");
+        let start = std::time::Instant::now();
+        let mut packed_text = vec![];
+        let Ok(mut reader) = needletail::parse_fastx_file("human-genome.fa") else {
+            panic!("Did not find human-genome.fa. Add/symlink it to test runtime on it.");
+        };
+        while let Some(r) = reader.next() {
+            let r = r.unwrap();
+            eprintln!(
+                "Read {:?} of len {:?}",
+                std::str::from_utf8(r.id()),
+                r.raw_seq().len()
+            );
+            pack(&r.raw_seq(), &mut packed_text);
+            eprintln!("Packed len {:?}", packed_text.len());
+        }
+        eprintln!("Packing took {:?}", start.elapsed());
+
+        let text = PackedVec {
+            len: packed_text.len() * 4,
+            seq: packed_text,
+        };
+        let k = 20;
+        let w = 12;
+        let minimizer = NtMinimizer { k, w };
+        let phf_builder = ptr_hash::PtrHashParams {
+            remap: false,
+            ..Default::default()
+        };
+
+        let sshash = SsHash::build(&[&text], minimizer, phf_builder);
+        sshash.print_size();
+    }
+
+    fn pack(text: &[u8], packed: &mut Vec<u8>) {
+        let mut packed_byte = 0;
+        let mut packed_len = 0;
+        for &base in text {
+            packed_byte |= match base {
+                b'a' | b'A' => 0,
+                b'c' | b'C' => 1,
+                b'g' | b'G' => 2,
+                b't' | b'T' => 3,
+                b'\r' | b'\n' => continue,
+                _ => panic!(),
+            } << (packed_len * 2);
+            packed_len += 1;
+            if packed_len == 4 {
+                packed.push(packed_byte);
+                packed_byte = 0;
+                packed_len = 0;
+            }
+        }
+    }
 }

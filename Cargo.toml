@@ -13,4 +13,5 @@ ptr_hash = { git = "https://github.com/RagnarGrootKoerkamp/ptrhash" }
 minimizers = { git = "https://github.com/RagnarGrootKoerkamp/minimizers" }
 
 [dev-dependencies]
+needletail = "0.5.1"
 rand = "0.8.5"
