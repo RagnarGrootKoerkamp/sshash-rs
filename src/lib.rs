@@ -56,15 +56,15 @@ pub struct NtMinimizer {
 impl Minimizer for NtMinimizer {
     fn minimizer_one(&self, window: &[u8]) -> (usize, u64) {
         let pos = minimizers::par::minimizer::minimizer_window(window, self.k);
-        let val = u64::from_ne_bytes(*window[pos..].split_first_chunk::<8>().unwrap().0)
-            & ((1u64 << (8 * self.k)) - 1);
+        let mask = u64::MAX >> (64 - 8 * self.k);
+        let val = unsafe { *(window.as_ptr().offset(pos as isize) as *const u64) & mask };
         (pos, val)
     }
 
     fn minimizers(&self, text: &[u8]) -> impl Iterator<Item = (usize, u64)> {
-        minimizers::par::minimizer::minimizer_scalar_it(text, self.k, self.w).map(|pos| {
-            let val = u64::from_ne_bytes(*text[pos as usize..].split_first_chunk::<8>().unwrap().0)
-                & ((1u64 << (8 * self.k)) - 1);
+        let mask = u64::MAX >> (64 - 8 * self.k);
+        minimizers::par::minimizer::minimizer_scalar_it(text, self.k, self.w).map(move |pos| {
+            let val = unsafe { *(text.as_ptr().offset(pos as isize) as *const u64) & mask };
             (pos as usize, val)
         })
     }
@@ -233,7 +233,13 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
         let offsets_end = self.sizes.get(hash + 1) as usize;
         for idx in offsets_start..offsets_end {
             let offset = self.offsets.get(idx);
+            if offset < minimizer_pos {
+                continue;
+            }
             let lmer_pos = offset as usize - minimizer_pos;
+            if lmer_pos + self.minimizer.l() > self.text.len() {
+                continue;
+            }
             let lmer = &self.text[lmer_pos..lmer_pos + self.minimizer.l()];
             if lmer == window {
                 return Some((
@@ -262,8 +268,10 @@ mod test {
     use super::*;
     use naive::*;
 
-    fn test_pos(minimizer: impl Minimizer, phf_builder: impl PhfBuilder<u64>) {
-        let text = (0..100000).map(|_| rand::random::<u8>()).collect_vec();
+    fn test_pos(minimizer: impl Minimizer, phf_builder: impl PhfBuilder<u64>, alphabet: usize) {
+        let text = (0..10000)
+            .map(|_| (rand::random::<u8>() as usize % alphabet) as u8)
+            .collect_vec();
         let l = minimizer.k() + minimizer.w() - 1;
         let sshash = SsHash::build(&[&text], minimizer, phf_builder);
 
@@ -273,14 +281,18 @@ mod test {
         }
     }
 
-    fn test_neg(minimizer: impl Minimizer, phf_builder: impl PhfBuilder<u64>) {
-        let text = (0..100000).map(|_| rand::random::<u8>()).collect_vec();
+    fn test_neg(minimizer: impl Minimizer, phf_builder: impl PhfBuilder<u64>, alphabet: usize) {
+        let text = (0..10000)
+            .map(|_| (rand::random::<u8>() as usize % alphabet) as u8)
+            .collect_vec();
         let l = minimizer.k() + minimizer.w() - 1;
         let sshash = SsHash::build(&[&text], minimizer, phf_builder);
 
         // The alphabet is large enough that we assume no duplicate k-mers occur.
         for _ in 0..text.len() {
-            let window = (0..l).map(|_| rand::random::<u8>()).collect_vec();
+            let window = (0..l)
+                .map(|_| (rand::random::<u8>() as usize % alphabet) as u8)
+                .collect_vec();
             assert_eq!(sshash.query_one(&window), None);
         }
     }
@@ -289,14 +301,14 @@ mod test {
     fn naive_pos() {
         let minimizer = NaiveMinimizer { k: 7, w: 11 };
         let phf_builder = NaivePhfBuilder::new();
-        test_pos(minimizer, phf_builder);
+        test_pos(minimizer, phf_builder, 256);
     }
 
     #[test]
     fn naive_neg() {
         let minimizer = NaiveMinimizer { k: 7, w: 11 };
         let phf_builder = NaivePhfBuilder::new();
-        test_neg(minimizer, phf_builder);
+        test_neg(minimizer, phf_builder, 256);
     }
 
     #[test]
@@ -306,37 +318,51 @@ mod test {
             remap: false,
             ..Default::default()
         };
-        test_pos(minimizer, phf_builder);
+        test_pos(minimizer, phf_builder, 256);
     }
 
     #[test]
     fn ptrhash_neg() {
-        let minimizer = NaiveMinimizer { k: 7, w: 11 };
+        let minimizer = NaiveMinimizer { k: 8, w: 11 };
         let phf_builder = ptr_hash::PtrHashParams {
             remap: false,
             ..Default::default()
         };
-        test_neg(minimizer, phf_builder);
+        test_neg(minimizer, phf_builder, 256);
     }
 
     #[test]
     fn ntmini_pos() {
-        let minimizer = NtMinimizer { k: 7, w: 11 };
-        let phf_builder = ptr_hash::PtrHashParams {
-            remap: false,
-            ..Default::default()
-        };
-        test_pos(minimizer, phf_builder);
+        let minimizer = NtMinimizer { k: 8, w: 11 };
+        let phf_builder = NaivePhfBuilder::new();
+        test_pos(minimizer, phf_builder, 4);
     }
 
     #[test]
     fn ntmini_neg() {
-        let minimizer = NtMinimizer { k: 7, w: 11 };
+        let minimizer = NtMinimizer { k: 8, w: 11 };
+        let phf_builder = NaivePhfBuilder::new();
+        test_neg(minimizer, phf_builder, 4);
+    }
+
+    #[test]
+    fn ntmini_ptrhash_pos() {
+        let minimizer = NtMinimizer { k: 8, w: 11 };
         let phf_builder = ptr_hash::PtrHashParams {
             remap: false,
             ..Default::default()
         };
-        test_neg(minimizer, phf_builder);
+        test_pos(minimizer, phf_builder, 4);
+    }
+
+    #[test]
+    fn ntmini_ptrhash_neg() {
+        let minimizer = NtMinimizer { k: 8, w: 11 };
+        let phf_builder = ptr_hash::PtrHashParams {
+            remap: false,
+            ..Default::default()
+        };
+        test_neg(minimizer, phf_builder, 4);
     }
 
     #[ignore]
