@@ -2,7 +2,9 @@ use itertools::Itertools;
 use std::cmp::Ordering;
 use sux::{
     bit_field_vec,
-    traits::{BitFieldSlice, BitFieldSliceCore, BitFieldSliceMut},
+    dict::EliasFano,
+    rank_sel::SelectAdaptConst,
+    traits::{BitFieldSlice, BitFieldSliceCore, BitFieldSliceMut, IndexedSeq},
 };
 
 pub trait PhfBuilder<T> {
@@ -32,7 +34,7 @@ pub struct SsHash<H: Phf<u64>, M: Minimizer> {
     endpoints: Vec<usize>, // Todo EF
     num_uniq_minis: usize,
     phf: H,
-    sizes: Vec<usize>, // Todo EF
+    sizes: sux::dict::EliasFano<SelectAdaptConst<sux::bits::BitVec<Box<[usize]>>>>,
     offsets: sux::bits::BitFieldVec,
 }
 
@@ -69,6 +71,11 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
             })
             .collect_vec();
 
+        let mut sizes_ef = sux::dict::EliasFanoBuilder::new(sizes.len(), *sizes.last().unwrap());
+        for &size in &sizes {
+            sizes_ef.push(size);
+        }
+
         let offset_bits = text.len().ilog2() as usize + 1;
         let mut offsets = bit_field_vec![offset_bits; minis.len(); 0];
         for (mini_val, chunk) in minis.iter().chunk_by(|x| x.1).into_iter() {
@@ -79,6 +86,9 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
                 }
             }
         }
+
+        let sizes = sizes_ef.build();
+        let sizes = unsafe { sizes.map_high_bits(SelectAdaptConst::<_, _>::new) };
 
         Self {
             minimizer,
@@ -98,7 +108,8 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
         let text = size_of_val(self.text.as_slice());
         let endpoints = size_of_val(self.endpoints.as_slice());
         let phf = self.phf.size();
-        let sizes = size_of_val(self.sizes.as_slice());
+        // TODO: Include size of rank-select structures.
+        let sizes = EliasFano::<(), ()>::estimate_size(self.offsets.len(), self.sizes.len()) / 8;
         let offsets = self.offsets.len() * self.offsets.bit_width() / 8;
         let total = text + endpoints + phf + sizes + offsets;
 
@@ -139,7 +150,7 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
         eprintln!(
             "sizes:     {:>10} {:>10} {:>10} {:>10.1} {:>10.1} {:>10.1}",
             self.sizes.len(),
-            self.sizes[self.phf.max()],
+            self.sizes.get(self.phf.max()),
             format!("{}", Size::from_bytes(sizes)),
             8. * sizes as f32 / num_bp,
             8. * sizes as f32 / num_minis,
@@ -168,8 +179,8 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
     pub fn query_one(&self, window: &[u8]) -> Option<(usize, usize)> {
         let (minimizer_pos, minimizer) = self.minimizer.minimizer_one(window);
         let hash: usize = self.phf.hash(minimizer)?;
-        let offsets_start = self.sizes[hash] as usize;
-        let offsets_end = self.sizes[hash + 1] as usize;
+        let offsets_start = self.sizes.get(hash) as usize;
+        let offsets_end = self.sizes.get(hash + 1) as usize;
         for idx in offsets_start..offsets_end {
             let offset = self.offsets.get(idx);
             let lmer_pos = offset as usize - minimizer_pos;
