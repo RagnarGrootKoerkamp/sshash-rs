@@ -1,5 +1,9 @@
 use itertools::Itertools;
 use std::cmp::Ordering;
+use sux::{
+    bit_field_vec,
+    traits::{BitFieldSlice, BitFieldSliceCore, BitFieldSliceMut},
+};
 
 pub trait PhfBuilder<T> {
     type Phf: Phf<T>;
@@ -28,8 +32,8 @@ pub struct SsHash<H: Phf<u64>, M: Minimizer> {
     endpoints: Vec<usize>, // Todo EF
     num_uniq_minis: usize,
     phf: H,
-    sizes: Vec<usize>,   // Todo EF
-    offsets: Vec<usize>, // Todo CompactVec
+    sizes: Vec<usize>, // Todo EF
+    offsets: sux::bits::BitFieldVec,
 }
 
 impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
@@ -65,12 +69,13 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
             })
             .collect_vec();
 
-        let mut offsets = vec![0; minis.len()];
+        let offset_bits = text.len().ilog2() as usize + 1;
+        let mut offsets = bit_field_vec![offset_bits; minis.len(); 0];
         for (mini_val, chunk) in minis.iter().chunk_by(|x| x.1).into_iter() {
             if let Some(hash) = phf.hash(mini_val) {
                 let start = sizes[hash] as usize;
                 for (i, (pos, _)) in chunk.enumerate() {
-                    offsets[start + i] = *pos;
+                    offsets.set(start + i, *pos);
                 }
             }
         }
@@ -94,7 +99,7 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
         let endpoints = size_of_val(self.endpoints.as_slice());
         let phf = self.phf.size();
         let sizes = size_of_val(self.sizes.as_slice());
-        let offsets = size_of_val(self.offsets.as_slice());
+        let offsets = self.offsets.len() * self.offsets.bit_width() / 8;
         let total = text + endpoints + phf + sizes + offsets;
 
         let num_bp = self.text.len() as f32;
@@ -165,15 +170,15 @@ impl<H: Phf<u64>, M: Minimizer> SsHash<H, M> {
         let hash: usize = self.phf.hash(minimizer)?;
         let offsets_start = self.sizes[hash] as usize;
         let offsets_end = self.sizes[hash + 1] as usize;
-        let offsets = &self.offsets[offsets_start..offsets_end];
-        for offset in offsets {
-            let lmer_pos = *offset as usize - minimizer_pos;
+        for idx in offsets_start..offsets_end {
+            let offset = self.offsets.get(idx);
+            let lmer_pos = offset as usize - minimizer_pos;
             let lmer = &self.text[lmer_pos..lmer_pos + self.minimizer.l()];
             if lmer == window {
                 return Some((
                     lmer_pos,
                     self.endpoints
-                        .binary_search_by(|x| {
+                        .binary_search_by(|&x| {
                             if x < offset {
                                 Ordering::Less
                             } else {
