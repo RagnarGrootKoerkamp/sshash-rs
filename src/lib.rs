@@ -18,6 +18,26 @@ pub trait Phf<T> {
     fn size(&self) -> usize;
 }
 
+impl<T: ptr_hash::KeyT> PhfBuilder<T> for ptr_hash::PtrHashParams {
+    type Phf = ptr_hash::PtrHash<T>;
+    fn build(&self, keys: &[T]) -> Self::Phf {
+        ptr_hash::PtrHash::new(keys, *self)
+    }
+}
+
+impl<T: ptr_hash::KeyT> Phf<T> for ptr_hash::PtrHash<T> {
+    fn hash(&self, key: T) -> Option<usize> {
+        Some(self.index(&key))
+    }
+    fn max(&self) -> usize {
+        self.max_index()
+    }
+    fn size(&self) -> usize {
+        let bits = self.bits_per_element();
+        ((bits.0 + bits.1) / 8. * self.n() as f32) as usize
+    }
+}
+
 pub trait Minimizer {
     fn minimizer_one(&self, window: &[u8]) -> (usize, u64); // (pos, value)
     fn minimizers(&self, text: &[u8]) -> impl Iterator<Item = (usize, u64)>; // (pos, value)
@@ -247,11 +267,15 @@ mod test {
     #[ignore]
     #[test]
     fn print_size() {
-        let text = (0..1000000).map(|_| rand::random::<u8>()).collect_vec();
+        let text = (0..10000000).map(|_| rand::random::<u8>()).collect_vec();
         let k = 21;
         let w = 11;
         let minimizer = NaiveMinimizer { k, w };
-        let phf_builder = NaivePhfBuilder::new();
+        let phf_builder = ptr_hash::PtrHashParams {
+            remap: false,
+            ..Default::default()
+        };
+
         let sshash = SsHash::build(&[&text], minimizer, phf_builder);
         sshash.print_size();
     }
