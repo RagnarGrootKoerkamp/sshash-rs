@@ -49,11 +49,15 @@ pub trait Minimizer {
     }
 }
 
-pub trait BpStorage {
+pub trait BpStorage: Default {
     type BpSlice<'a>: IntoBpIterator
     where
         Self: 'a;
-    fn concat(data: &[Self::BpSlice<'_>]) -> Self;
+
+    fn push(&mut self, seq: Self::BpSlice<'_>) -> Range<usize>;
+    fn concat<'a>(input_seqs: impl Iterator<Item = Self::BpSlice<'a>>) -> (Self, Vec<Range<usize>>)
+    where
+        Self: Sized + 'a;
     fn get(&self) -> Self::BpSlice<'_>;
     fn slice(&self, range: Range<usize>) -> Self::BpSlice<'_>;
     fn size(&self) -> usize;
@@ -64,8 +68,28 @@ pub trait BpStorage {
 impl BpStorage for Vec<u8> {
     type BpSlice<'a> = &'a [u8];
 
-    fn concat(data: &[Self::BpSlice<'_>]) -> Self {
-        data.concat()
+    fn push(&mut self, seq: Self::BpSlice<'_>) -> Range<usize> {
+        let start = seq.len();
+        let end = start + IntoBpIterator::len(&seq);
+        let range = start..end;
+        self.extend(seq);
+        range
+    }
+
+    fn concat<'a>(
+        input_seqs: impl Iterator<Item = Self::BpSlice<'a>>,
+    ) -> (Self, Vec<Range<usize>>) {
+        let mut seq = vec![];
+        let ranges = input_seqs
+            .map(|slice| {
+                let start = seq.len();
+                let end = start + IntoBpIterator::len(&slice);
+                let range = start..end;
+                seq.extend(slice);
+                range
+            })
+            .collect();
+        (seq, ranges)
     }
     fn get(&self) -> Self::BpSlice<'_> {
         &*self
@@ -84,7 +108,7 @@ impl BpStorage for Vec<u8> {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct PackedVec {
     pub seq: Vec<u8>,
     pub len: usize,
@@ -93,14 +117,24 @@ pub struct PackedVec {
 impl BpStorage for PackedVec {
     type BpSlice<'a> = Packed<'a>;
 
-    fn concat(seqs: &[Self::BpSlice<'_>]) -> Self {
-        let mut seq = vec![];
-        seq.reserve(seqs.iter().map(|p| p.seq.len()).sum::<usize>());
-        seq.extend(seqs.iter().flat_map(|p| p.seq.iter()));
-        let len = seqs.iter().map(|x| x.len()).sum::<usize>();
-        Self { seq, len }
+    fn push<'a>(&mut self, seq: Self::BpSlice<'a>) -> Range<usize> {
+        let start = 4 * self.seq.len() + seq.offset;
+        let end = start + IntoBpIterator::len(&seq);
+        let range = start..end;
+        self.seq.extend(seq.seq);
+        self.len = 4 * self.seq.len();
+        range
     }
-
+    fn concat<'a>(
+        input_seqs: impl Iterator<Item = Self::BpSlice<'a>>,
+    ) -> (Self, Vec<Range<usize>>) {
+        let mut packed_vec = PackedVec {
+            len: 0,
+            seq: vec![],
+        };
+        let ranges = input_seqs.map(|slice| packed_vec.push(slice)).collect();
+        (packed_vec, ranges)
+    }
     fn get(&self) -> Self::BpSlice<'_> {
         Packed {
             seq: &self.seq,
@@ -165,8 +199,8 @@ impl Minimizer for NtMinimizer {
 // TODO: query throughput benchmarks
 pub struct SsHash<H: Phf<u64>, M: Minimizer, P: BpStorage> {
     minimizer: M,
-    seqs: P,               // Todo bitpacked
-    endpoints: Vec<usize>, // Todo EF
+    seqs: P,
+    endpoints: Vec<usize>, // TODO EF?
     num_uniq_minis: usize,
     phf: H,
     sizes: sux::dict::EliasFano<SelectAdaptConst<sux::bits::BitVec<Box<[usize]>>>>,
@@ -175,26 +209,49 @@ pub struct SsHash<H: Phf<u64>, M: Minimizer, P: BpStorage> {
 
 impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
     // Convenience wrapper around build_from_slice that doesn't require type annotations.
-    pub fn build(seq: &[&P], minimizer: M, phf_builder: impl PhfBuilder<u64, Phf = H>) -> Self {
-        let seq = seq.iter().map(|x| x.get()).collect_vec();
-        Self::build_from_slice(&seq, minimizer, phf_builder)
-    }
-    pub fn build_from_slice(
-        seqs: &[P::BpSlice<'_>],
+    pub fn build<'a>(
+        input_seqs: impl IntoIterator<Item = &'a P>,
         minimizer: M,
         phf_builder: impl PhfBuilder<u64, Phf = H>,
-    ) -> Self {
-        let endpoints = seqs
-            .iter()
-            .scan(0, |acc, x| {
-                *acc += x.len().next_multiple_of(4);
-                Some(*acc)
-            })
-            .collect_vec();
-        let seqs = P::concat(seqs);
+    ) -> Self
+    where
+        P: 'a,
+    {
+        Self::build_from_slices(
+            input_seqs.into_iter().map(|x| x.get()),
+            minimizer,
+            phf_builder,
+        )
+    }
+    pub fn build_from_slices<'a>(
+        input_seqs: impl Iterator<Item = P::BpSlice<'a>>,
+        minimizer: M,
+        phf_builder: impl PhfBuilder<u64, Phf = H>,
+    ) -> Self
+    where
+        P: 'a,
+    {
+        let (seq, ranges) = P::concat(input_seqs);
 
-        // Todo split at input seq boundaries
-        let mut minis = minimizer.minimizers(seqs.get()).dedup().collect_vec();
+        Self::build_from_ranges(seq, ranges, minimizer, phf_builder)
+    }
+
+    fn build_from_ranges(
+        seq: P,
+        ranges: Vec<Range<usize>>,
+        minimizer: M,
+        phf_builder: impl PhfBuilder<u64, Phf = H>,
+    ) -> SsHash<H, M, P> {
+        let endpoints = ranges.iter().map(|x| x.end).collect_vec();
+        let mut minis = ranges
+            .into_iter()
+            .flat_map(|range| {
+                minimizer
+                    .minimizers(seq.slice(range.clone()))
+                    .map(move |(pos, val)| (pos + range.start, val))
+            })
+            .dedup()
+            .collect_vec();
         minis.sort_by_key(|x| x.1);
         // Todo: is passing an iterator to the phf builder sufficient?
         let uniq_mini_vals = minis.iter().map(|x| x.1).dedup().collect_vec();
@@ -220,7 +277,7 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
             sizes_ef.push(size);
         }
 
-        let offset_bits = seqs.get().len().ilog2() as usize + 1;
+        let offset_bits = seq.get().len().ilog2() as usize + 1;
         let mut offsets = bit_field_vec![offset_bits; minis.len(); 0];
         for (mini_val, chunk) in minis.iter().chunk_by(|x| x.1).into_iter() {
             if let Some(hash) = phf.hash(mini_val) {
@@ -236,7 +293,7 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
 
         Self {
             minimizer,
-            seqs,
+            seqs: seq,
             endpoints,
             num_uniq_minis,
             phf,
@@ -368,10 +425,10 @@ mod test {
         phf_builder: impl PhfBuilder<u64>,
         alphabet: usize,
     ) {
-        let n = 100;
+        let n = 100000;
         let seq = P::random(n, alphabet);
         let l = minimizer.k() + minimizer.w() - 1;
-        let sshash = SsHash::build(&[&seq], minimizer, phf_builder);
+        let sshash = SsHash::build([&seq], minimizer, phf_builder);
 
         // The alphabet is large enough that we assume no duplicate k-mers occur.
         for i in 0..seq.get().len() - l {
@@ -385,10 +442,10 @@ mod test {
         phf_builder: impl PhfBuilder<u64>,
         alphabet: usize,
     ) {
-        let n = 10000;
+        let n = 100000;
         let seq = P::random(n, alphabet);
         let l = minimizer.l();
-        let sshash = SsHash::build(&[&seq], minimizer, phf_builder);
+        let sshash = SsHash::build([&seq], minimizer, phf_builder);
 
         // The alphabet is large enough that we assume no duplicate k-mers occur.
         for _ in 0..seq.get().len() {
@@ -477,7 +534,7 @@ mod test {
             ..Default::default()
         };
 
-        let sshash = SsHash::build(&[&seq], minimizer, phf_builder);
+        let sshash = SsHash::build([&seq], minimizer, phf_builder);
         sshash.print_size();
     }
 
@@ -486,26 +543,30 @@ mod test {
     fn print_size_hg() {
         eprintln!("Reading..");
         let start = std::time::Instant::now();
-        let mut packed_seq = vec![];
         let Ok(mut reader) = needletail::parse_fastx_file("human-genome.fa") else {
             panic!("Did not find human-genome.fa. Add/symlink it to test runtime on it.");
         };
+        let mut i = 0;
+        let mut seq = PackedVec::default();
+        let mut ranges = vec![];
+        let mut pack_buf = vec![];
         while let Some(r) = reader.next() {
             let r = r.unwrap();
-            eprintln!(
-                "Read {:?} of len {:?}",
-                std::str::from_utf8(r.id()),
-                r.raw_seq().len()
-            );
-            pack(&r.raw_seq(), &mut packed_seq);
-            eprintln!("Packed len {:?}", packed_seq.len());
+            let len = pack(&r.raw_seq(), &mut pack_buf);
+            let packed = Packed {
+                seq: &pack_buf,
+                offset: 0,
+                len,
+            };
+            ranges.push(seq.push(packed));
+            pack_buf.clear();
+            if i % 32 == 0 {
+                eprint!("Packed len {}\r", size::Size::from_bytes(seq.seq.len()));
+            }
+            i += 1;
         }
         eprintln!("Packing took {:?}", start.elapsed());
 
-        let seq = PackedVec {
-            len: packed_seq.len() * 4,
-            seq: packed_seq,
-        };
         let k = 20;
         let w = 12;
         let minimizer = NtMinimizer { k, w };
@@ -514,11 +575,11 @@ mod test {
             ..Default::default()
         };
 
-        let sshash = SsHash::build(&[&seq], minimizer, phf_builder);
+        let sshash = SsHash::build_from_ranges(seq, ranges, minimizer, phf_builder);
         sshash.print_size();
     }
 
-    fn pack(seq: &[u8], packed: &mut Vec<u8>) {
+    fn pack(seq: &[u8], packed: &mut Vec<u8>) -> usize {
         let mut packed_byte = 0;
         let mut packed_len = 0;
         for &base in seq {
@@ -531,11 +592,14 @@ mod test {
                 _ => panic!(),
             } << (packed_len * 2);
             packed_len += 1;
-            if packed_len == 4 {
+            if packed_len % 4 == 0 {
                 packed.push(packed_byte);
                 packed_byte = 0;
-                packed_len = 0;
             }
         }
+        if packed_len % 4 != 0 {
+            packed.push(packed_byte);
+        }
+        packed_len
     }
 }
