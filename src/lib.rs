@@ -302,7 +302,6 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
         }
     }
 
-    // TODO: query_stream
     pub fn query_one(&self, window: P::BpSlice<'_>) -> Option<(usize, usize)> {
         let (minimizer_pos, minimizer) = self.minimizer.minimizer_one(window);
         let hash: usize = self.phf.hash(minimizer)?;
@@ -334,6 +333,71 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
             }
         }
         None
+    }
+
+    /// Returns (#found kmers, total # kmers)
+    pub fn query_stream(&self, query: P::BpSlice<'_>) -> (usize, usize) {
+        let l = self.minimizer.l();
+        let minimizer_it = self.minimizer.minimizers(query);
+        let mut found = 0;
+        let mut last_minimizer_pos = usize::MAX;
+        let mut last_lmer_pos = None;
+        let mut offsets = 0..0;
+        for (i, (minimizer_pos, minimizer)) in minimizer_it.enumerate() {
+            let same_minimizer = minimizer_pos == last_minimizer_pos;
+            last_minimizer_pos = minimizer_pos;
+
+            // Update the range of offsets for the current minimizer if it changed.
+            if !same_minimizer {
+                let hash: usize = self.phf.hash(minimizer).unwrap();
+                let offsets_start = self.sizes.get(hash) as usize;
+                let offsets_end = self.sizes.get(hash + 1) as usize;
+                offsets = offsets_start..offsets_end;
+            }
+
+            // Try extending the previous match, regardless of where the current minimizer is.
+            // TODO: Check we don't cross unitig ends.
+            if let Some(last_pos) = last_lmer_pos {
+                let candidate_lmer_pos = last_pos + 1;
+                if candidate_lmer_pos + l <= self.seqs.get().len()
+                    && query.sub_slice(i + l - 1, 1).to_word()
+                        == self
+                            .seqs
+                            .slice(candidate_lmer_pos + l - 1..candidate_lmer_pos + l)
+                            .to_word()
+                {
+                    found += 1;
+                    last_lmer_pos = Some(candidate_lmer_pos);
+                    continue;
+                }
+            }
+
+            // Iterate over all occurrences of the minimizer.
+            'found: {
+                let relative_minimizer_pos = minimizer_pos - i;
+                for idx in offsets.clone() {
+                    let offset = self.offsets.get(idx);
+                    if offset < relative_minimizer_pos {
+                        continue;
+                    }
+                    let lmer_pos = offset as usize - relative_minimizer_pos;
+                    if lmer_pos + self.minimizer.l() > self.seqs.get().len() {
+                        continue;
+                    }
+                    let lmer = self.seqs.slice(lmer_pos..lmer_pos + self.minimizer.l());
+                    let sequence_lmer = lmer.to_word();
+                    let query_lmer = query.sub_slice(i, l).to_word();
+                    if sequence_lmer == query_lmer {
+                        found += 1;
+                        last_lmer_pos = Some(lmer_pos);
+                        break 'found;
+                    }
+                }
+                // not found
+                last_lmer_pos = None;
+            }
+        }
+        (found, query.len() - self.minimizer.l() + 1)
     }
 
     pub fn print_size(&self) {
@@ -520,6 +584,53 @@ mod test {
             ..Default::default()
         };
         test_neg::<PackedVec>(minimizer, phf_builder, 4);
+    }
+
+    fn test_pos_stream<P: BpStorage>(
+        minimizer: impl Minimizer,
+        phf_builder: impl PhfBuilder<u64>,
+        alphabet: usize,
+    ) {
+        let n = 1000;
+        let l = minimizer.l();
+        let seq = P::random(n, alphabet);
+        let sshash = SsHash::build([&seq], minimizer, phf_builder);
+
+        assert_eq!(sshash.query_stream(seq.get()), (n - l + 1, n - l + 1));
+    }
+
+    fn test_neg_stream<P: BpStorage + std::fmt::Debug>(
+        minimizer: impl Minimizer,
+        phf_builder: impl PhfBuilder<u64>,
+        alphabet: usize,
+    ) {
+        let n = 100000;
+        let l = minimizer.l();
+        let seq = P::random(n, alphabet);
+        let sshash = SsHash::build([&seq], minimizer, phf_builder);
+
+        let query = P::random(n, alphabet);
+        assert_eq!(sshash.query_stream(query.get()), (0, n - l + 1));
+    }
+
+    #[test]
+    fn ntmini_ptrhash_pos_packed_stream() {
+        let minimizer = NtMinimizer { k: 19, w: 11 };
+        let phf_builder = ptr_hash::PtrHashParams {
+            remap: false,
+            ..Default::default()
+        };
+        test_pos_stream::<PackedVec>(minimizer, phf_builder, 4);
+    }
+
+    #[test]
+    fn ntmini_ptrhash_neg_packed_stream() {
+        let minimizer = NtMinimizer { k: 19, w: 11 };
+        let phf_builder = ptr_hash::PtrHashParams {
+            remap: false,
+            ..Default::default()
+        };
+        test_neg_stream::<PackedVec>(minimizer, phf_builder, 4);
     }
 
     #[ignore]
