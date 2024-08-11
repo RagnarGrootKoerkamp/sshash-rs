@@ -53,7 +53,7 @@ pub trait BpStorage {
     type BpSlice<'a>: IntoBpIterator
     where
         Self: 'a;
-    fn concat(data: &[&Self]) -> Self;
+    fn concat(data: &[Self::BpSlice<'_>]) -> Self;
     fn get(&self) -> Self::BpSlice<'_>;
     fn slice(&self, range: Range<usize>) -> Self::BpSlice<'_>;
     fn size(&self) -> usize;
@@ -64,8 +64,7 @@ pub trait BpStorage {
 impl BpStorage for Vec<u8> {
     type BpSlice<'a> = &'a [u8];
 
-    fn concat(data: &[&Self]) -> Self {
-        let data = data.iter().map(|x| x.as_slice()).collect_vec();
+    fn concat(data: &[Self::BpSlice<'_>]) -> Self {
         data.concat()
     }
     fn get(&self) -> Self::BpSlice<'_> {
@@ -94,11 +93,11 @@ pub struct PackedVec {
 impl BpStorage for PackedVec {
     type BpSlice<'a> = Packed<'a>;
 
-    fn concat(seqs: &[&Self]) -> Self {
+    fn concat(seqs: &[Self::BpSlice<'_>]) -> Self {
         let mut seq = vec![];
         seq.reserve(seqs.iter().map(|p| p.seq.len()).sum::<usize>());
         seq.extend(seqs.iter().flat_map(|p| p.seq.iter()));
-        let len = seqs.iter().map(|x| x.get().len()).sum::<usize>();
+        let len = seqs.iter().map(|x| x.len()).sum::<usize>();
         Self { seq, len }
     }
 
@@ -161,6 +160,9 @@ impl Minimizer for NtMinimizer {
     }
 }
 
+// TODO: sparse index
+// TODO: construction time/memory benchmarks
+// TODO: query throughput benchmarks
 pub struct SsHash<H: Phf<u64>, M: Minimizer, P: BpStorage> {
     minimizer: M,
     text: P,               // Todo bitpacked
@@ -172,11 +174,20 @@ pub struct SsHash<H: Phf<u64>, M: Minimizer, P: BpStorage> {
 }
 
 impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
+    // Convenience wrapper around build_from_slice that doesn't require type annotations.
     pub fn build(text: &[&P], minimizer: M, phf_builder: impl PhfBuilder<u64, Phf = H>) -> Self {
+        let text = text.iter().map(|x| x.get()).collect_vec();
+        Self::build_from_slice(&text, minimizer, phf_builder)
+    }
+    pub fn build_from_slice(
+        text: &[P::BpSlice<'_>],
+        minimizer: M,
+        phf_builder: impl PhfBuilder<u64, Phf = H>,
+    ) -> Self {
         let endpoints = text
             .iter()
             .scan(0, |acc, x| {
-                *acc += x.get().len().next_multiple_of(4);
+                *acc += x.len().next_multiple_of(4);
                 Some(*acc)
             })
             .collect_vec();
@@ -232,6 +243,40 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
             sizes,
             offsets,
         }
+    }
+
+    // TODO: query_stream
+    pub fn query_one(&self, window: P::BpSlice<'_>) -> Option<(usize, usize)> {
+        let (minimizer_pos, minimizer) = self.minimizer.minimizer_one(window);
+        let hash: usize = self.phf.hash(minimizer)?;
+        let offsets_start = self.sizes.get(hash) as usize;
+        let offsets_end = self.sizes.get(hash + 1) as usize;
+        for idx in offsets_start..offsets_end {
+            let offset = self.offsets.get(idx);
+            if offset < minimizer_pos {
+                continue;
+            }
+            let lmer_pos = offset as usize - minimizer_pos;
+            if lmer_pos + self.minimizer.l() > self.text.get().len() {
+                continue;
+            }
+            let lmer = &self.text.slice(lmer_pos..lmer_pos + self.minimizer.l());
+            if lmer.to_word() == window.to_word() {
+                return Some((
+                    lmer_pos,
+                    self.endpoints
+                        .binary_search_by(|&x| {
+                            if x < offset {
+                                Ordering::Less
+                            } else {
+                                Ordering::Greater
+                            }
+                        })
+                        .unwrap_err(),
+                ));
+            }
+        }
+        None
     }
 
     pub fn print_size(&self) {
@@ -307,39 +352,6 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
             8. * total as f32 / num_minis,
             8. * total as f32 / self.num_uniq_minis as f32
         );
-    }
-
-    pub fn query_one(&self, window: P::BpSlice<'_>) -> Option<(usize, usize)> {
-        let (minimizer_pos, minimizer) = self.minimizer.minimizer_one(window);
-        let hash: usize = self.phf.hash(minimizer)?;
-        let offsets_start = self.sizes.get(hash) as usize;
-        let offsets_end = self.sizes.get(hash + 1) as usize;
-        for idx in offsets_start..offsets_end {
-            let offset = self.offsets.get(idx);
-            if offset < minimizer_pos {
-                continue;
-            }
-            let lmer_pos = offset as usize - minimizer_pos;
-            if lmer_pos + self.minimizer.l() > self.text.get().len() {
-                continue;
-            }
-            let lmer = &self.text.slice(lmer_pos..lmer_pos + self.minimizer.l());
-            if lmer.to_word() == window.to_word() {
-                return Some((
-                    lmer_pos,
-                    self.endpoints
-                        .binary_search_by(|&x| {
-                            if x < offset {
-                                Ordering::Less
-                            } else {
-                                Ordering::Greater
-                            }
-                        })
-                        .unwrap_err(),
-                ));
-            }
-        }
-        None
     }
 }
 

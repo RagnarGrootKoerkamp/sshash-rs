@@ -3,6 +3,11 @@ name = "sshash-rs"
 version = "0.1.0"
 edition = "2021"
 
+[profile.release]
+debug = true
+lto = "thin"
+incremental = true
+
 [dependencies]
 cacheline-ef = { path = "../cacheline-ef" }
 fxhash = "0.2.1"
