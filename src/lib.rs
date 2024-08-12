@@ -244,6 +244,8 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
         phf_builder: impl PhfBuilder<u64, Phf = H>,
     ) -> SsHash<H, M, P> {
         let endpoints = ranges.iter().map(|x| x.end).collect_vec();
+        let start = std::time::Instant::now();
+        eprintln!("{:.1?}: minimizers..", start.elapsed());
         let mut minis = ranges
             .into_iter()
             .flat_map(|range| {
@@ -253,17 +255,22 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
             })
             .dedup()
             .collect_vec();
+        eprintln!("{:.1?}: sort..", start.elapsed());
         minis.sort_by_key(|x| x.1);
+        eprintln!("{:.1?}: uniq minis..", start.elapsed());
         // Todo: is passing an iterator to the phf builder sufficient?
         let uniq_mini_vals = minis.iter().map(|x| x.1).dedup().collect_vec();
         let num_uniq_minis = uniq_mini_vals.len();
+        eprintln!("{:.1?}: build phf..", start.elapsed());
         let phf = phf_builder.build(&uniq_mini_vals);
         let mut sizes = vec![0; phf.max() + 1];
+        eprintln!("{:.1?}: fill sizes..", start.elapsed());
         for (mini_val, chunk) in minis.iter().chunk_by(|x| x.1).into_iter() {
             if let Some(hash) = phf.hash(mini_val) {
                 sizes[hash] = chunk.count();
             }
         }
+        eprintln!("{:.1?}: accumulate sizes..", start.elapsed());
         sizes = sizes
             .into_iter()
             .scan(0, |acc, x| {
@@ -273,11 +280,7 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
             })
             .collect_vec();
 
-        let mut sizes_ef = sux::dict::EliasFanoBuilder::new(sizes.len(), *sizes.last().unwrap());
-        for &size in &sizes {
-            sizes_ef.push(size);
-        }
-
+        eprintln!("{:.1?}: fill offsets..", start.elapsed());
         let offset_bits = seq.get().len().ilog2() as usize + 1;
         let mut offsets = bit_field_vec![offset_bits; minis.len(); 0];
         for (mini_val, chunk) in minis.iter().chunk_by(|x| x.1).into_iter() {
@@ -289,8 +292,16 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
             }
         }
 
+        eprintln!("{:.1?}: Build sizes EF..", start.elapsed());
+        let mut sizes_ef = sux::dict::EliasFanoBuilder::new(sizes.len(), *sizes.last().unwrap());
+        for &size in &sizes {
+            sizes_ef.push(size);
+        }
+
         let sizes = sizes_ef.build();
         let sizes = unsafe { sizes.map_high_bits(SelectAdaptConst::<_, _>::new) };
+
+        eprintln!("{:.1?}: done.", start.elapsed());
 
         Self {
             minimizer,
@@ -484,6 +495,21 @@ mod naive;
 mod test {
     use super::*;
     use naive::*;
+
+    #[test]
+    fn build() {
+        let minimizer = NtMinimizer { k: 19, w: 11 };
+        let phf_builder = ptr_hash::PtrHashParams {
+            remap: false,
+            ..Default::default()
+        };
+        let n = 1000000;
+        let num_seqs = 20;
+        let seqs = (0..num_seqs).map(|_| PackedVec::random(n, 4)).collect_vec();
+        let start = std::time::Instant::now();
+        let _sshash = SsHash::build(&seqs, minimizer, phf_builder);
+        eprintln!("Construction took {:?}", start.elapsed());
+    }
 
     fn test_pos<P: BpStorage>(
         minimizer: impl Minimizer,
