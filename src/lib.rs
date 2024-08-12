@@ -1,4 +1,4 @@
-#![feature(array_chunks)]
+#![feature(array_chunks, iter_repeat_n)]
 use itertools::Itertools;
 use minimizers::par::packed::{IntoBpIterator, Packed};
 use rayon::prelude::*;
@@ -15,7 +15,7 @@ pub trait PhfBuilder<T> {
     fn build(&self, keys: &[T]) -> Self::Phf;
 }
 
-pub trait Phf<T> {
+pub trait Phf<T>: Sync {
     fn hash(&self, key: T) -> Option<usize>; // hash
     fn max(&self) -> usize; // upper bound on hashes
     fn size(&self) -> usize;
@@ -193,6 +193,7 @@ impl Minimizer for NtMinimizer {
 // TODO: sparse index
 // TODO: construction time/memory benchmarks
 // TODO: query throughput benchmarks
+// TODO: External memory construction for offsets fs
 pub struct SsHash<H: Phf<u64>, M: Minimizer, P: BpStorage> {
     minimizer: M,
     seqs: P,
@@ -265,11 +266,60 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
         let num_uniq_minis = uniq_mini_vals.len();
         eprintln!("{:.1?}: build phf..", start.elapsed());
         let phf = phf_builder.build(&uniq_mini_vals);
-        let mut sizes = vec![0; phf.max() + 1];
+        eprintln!("{:.1?}: collect ranges..", start.elapsed());
+
+        let mut uniq_mini_range = {
+            let threads = rayon::current_num_threads();
+            let target_size = minis.len().div_ceil(threads);
+            let mut start = 0;
+            let ranges = (0..threads)
+                .map(|_| {
+                    let mut end = (start + target_size).min(minis.len());
+                    if start >= minis.len() {
+                        return minis.len()..minis.len();
+                    }
+                    let val = minis[end - 1].1;
+                    while end < minis.len() && val == minis[end].1 {
+                        end += 1;
+                    }
+                    let range = start..end;
+                    start = end;
+                    range
+                })
+                .collect_vec();
+
+            ranges
+                .into_par_iter()
+                .flat_map_iter(|range| {
+                    let r_start = range.start;
+                    minis[range.clone()]
+                        .iter()
+                        .enumerate()
+                        .chunk_by(|x| x.1 .1)
+                        .into_iter()
+                        .map(|(val, mut chunk)| {
+                            let start = r_start + chunk.next().unwrap().0;
+                            let end = start + 1 + chunk.count();
+                            (phf.hash(val).unwrap(), start..end)
+                        })
+                        .collect_vec()
+                })
+                .collect::<Vec<_>>()
+        };
+        eprintln!("{:.1?}: sort by hash..", start.elapsed());
+        uniq_mini_range.par_sort_by_key(|(idx, _range)| *idx);
         eprintln!("{:.1?}: fill sizes..", start.elapsed());
-        for (mini_val, chunk) in minis.iter().chunk_by(|x| x.1).into_iter() {
-            let hash = phf.hash(mini_val).unwrap();
-            sizes[hash] = chunk.count();
+        let mut pos = 0;
+        let mut sizes = uniq_mini_range
+            .iter()
+            .flat_map(|(idx, range)| {
+                let extra = idx - pos;
+                pos = *idx + 1;
+                std::iter::repeat_n(0, extra).chain(std::iter::once(range.len()))
+            })
+            .collect::<Vec<_>>();
+        while sizes.len() <= phf.max() {
+            sizes.push(0);
         }
         eprintln!("{:.1?}: accumulate sizes..", start.elapsed());
         sizes = sizes
@@ -282,15 +332,17 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
             .collect_vec();
 
         eprintln!("{:.1?}: fill offsets..", start.elapsed());
+        let offsets = uniq_mini_range
+            .into_par_iter()
+            .flat_map_iter(|(_idx, range)| minis[range].iter().map(|(pos, _val)| *pos))
+            .collect::<Vec<_>>();
+        assert_eq!(offsets.len(), minis.len());
+
+        eprintln!("{:.1?}: packed offsets..", start.elapsed());
         let offset_bits = seq.get().len().ilog2() as usize + 1;
-        let mut offsets = bit_field_vec![offset_bits; minis.len(); 0];
-        for (mini_val, chunk) in minis.iter().chunk_by(|x| x.1).into_iter() {
-            if let Some(hash) = phf.hash(mini_val) {
-                let start = sizes[hash] as usize;
-                for (i, (pos, _)) in chunk.enumerate() {
-                    offsets.set(start + i, *pos);
-                }
-            }
+        let mut packed_offsets = bit_field_vec![offset_bits; minis.len(); 0];
+        for (i, o) in offsets.into_iter().enumerate() {
+            packed_offsets.set(i, o);
         }
 
         eprintln!("{:.1?}: Build sizes EF..", start.elapsed());
@@ -311,7 +363,7 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
             num_uniq_minis,
             phf,
             sizes,
-            offsets,
+            offsets: packed_offsets,
         }
     }
 

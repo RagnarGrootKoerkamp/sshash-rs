@@ -14,7 +14,7 @@ impl<T> NaivePhfBuilder<T> {
     }
 }
 
-impl<T: Hash + Eq + Copy> PhfBuilder<T> for NaivePhfBuilder<T> {
+impl<T: Hash + Eq + Copy + Sync> PhfBuilder<T> for NaivePhfBuilder<T> {
     type Phf = NaivePhf<T>;
 
     fn build(&self, keys: &[T]) -> Self::Phf {
@@ -28,7 +28,7 @@ pub struct NaivePhf<T> {
     hashmap: HashMap<T, usize>,
 }
 
-impl<T: Hash + Eq> Phf<T> for NaivePhf<T> {
+impl<T: Hash + Eq + Sync> Phf<T> for NaivePhf<T> {
     fn hash(&self, key: T) -> Option<usize> {
         self.hashmap.get(&key).copied()
     }
