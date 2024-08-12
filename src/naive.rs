@@ -48,7 +48,7 @@ pub struct NaiveMinimizer {
 }
 
 impl Minimizer for NaiveMinimizer {
-    fn minimizer_one(&self, window: impl IntoBpIterator) -> (usize, u64) {
+    fn minimizer_one(&self, window: impl IntoBpIterator) -> usize {
         assert_eq!(window.len(), self.l());
         (0..self.w)
             .map(|i| {
@@ -58,13 +58,13 @@ impl Minimizer for NaiveMinimizer {
             })
             .min_by_key(|&(_, hash)| hash)
             .unwrap()
+            .0
     }
 
-    fn minimizers(&self, text: impl IntoBpIterator) -> impl Iterator<Item = (usize, u64)> {
+    fn minimizers(&self, text: impl IntoBpIterator) -> impl Iterator<Item = usize> {
         (0..text.len() - self.l() + 1).map(move |i| {
             let window = text.sub_slice(i, self.l());
-            let (pos, val) = self.minimizer_one(window);
-            (i + pos, val)
+            i + self.minimizer_one(window)
         })
     }
 

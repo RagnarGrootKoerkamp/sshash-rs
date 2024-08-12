@@ -41,8 +41,8 @@ impl<T: ptr_hash::KeyT> Phf<T> for ptr_hash::PtrHash<T> {
 }
 
 pub trait Minimizer {
-    fn minimizer_one(&self, window: impl IntoBpIterator) -> (usize, u64); // (pos, value)
-    fn minimizers(&self, seq: impl IntoBpIterator) -> impl Iterator<Item = (usize, u64)>; // (pos, value)
+    fn minimizer_one(&self, window: impl IntoBpIterator) -> usize; // position of mini
+    fn minimizers(&self, seq: impl IntoBpIterator) -> impl Iterator<Item = usize>; // absolute positions of minis
     fn k(&self) -> usize;
     fn w(&self) -> usize;
     fn l(&self) -> usize {
@@ -171,19 +171,13 @@ pub struct NtMinimizer {
 }
 
 impl Minimizer for NtMinimizer {
-    fn minimizer_one(&self, window: impl IntoBpIterator) -> (usize, u64) {
-        let pos = minimizers::par::minimizer::minimizer_window::<false>(window, self.k);
-        let val = window.sub_slice(pos, self.k).to_word() as u64;
-        (pos, val)
+    fn minimizer_one(&self, window: impl IntoBpIterator) -> usize {
+        minimizers::par::minimizer::minimizer_window::<false>(window, self.k)
     }
 
-    fn minimizers(&self, seq: impl IntoBpIterator) -> impl Iterator<Item = (usize, u64)> {
-        minimizers::par::minimizer::minimizer_scalar_it::<false>(seq, self.k, self.w).map(
-            move |pos| {
-                let val = seq.sub_slice(pos as usize, self.k).to_word() as u64;
-                (pos as usize, val)
-            },
-        )
+    fn minimizers(&self, seq: impl IntoBpIterator) -> impl Iterator<Item = usize> {
+        minimizers::par::minimizer::minimizer_scalar_it::<false>(seq, self.k, self.w)
+            .map(|pos| pos as usize)
     }
 
     fn k(&self) -> usize {
@@ -248,12 +242,19 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
         eprintln!("{:.1?}: minimizers..", start.elapsed());
         let mut minis = ranges
             .into_iter()
-            .flat_map(|range| {
-                minimizer
-                    .minimizers(seq.slice(range.clone()))
-                    .map(move |(pos, val)| (pos + range.start, val))
-            })
+            .flat_map(
+                #[inline(always)]
+                |range| {
+                    minimizer
+                        .minimizers(seq.slice(range.clone()))
+                        .map(move |pos| pos + range.start)
+                },
+            )
             .dedup()
+            .map(|pos| {
+                let val = seq.slice(pos..pos + minimizer.k()).to_word() as u64;
+                (pos, val)
+            })
             .collect_vec();
         eprintln!("{:.1?}: sort..", start.elapsed());
         minis.sort_by_key(|x| x.1);
@@ -315,7 +316,10 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
     }
 
     pub fn query_one(&self, window: P::BpSlice<'_>) -> Option<(usize, usize)> {
-        let (minimizer_pos, minimizer) = self.minimizer.minimizer_one(window);
+        let minimizer_pos = self.minimizer.minimizer_one(window);
+        let minimizer = window
+            .sub_slice(minimizer_pos, self.minimizer.k())
+            .to_word() as u64;
         let hash: usize = self.phf.hash(minimizer)?;
         let offsets_start = self.sizes.get(hash) as usize;
         let offsets_end = self.sizes.get(hash + 1) as usize;
@@ -355,12 +359,14 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
         let mut last_minimizer_pos = usize::MAX;
         let mut last_lmer_pos = None;
         let mut offsets = 0..0;
-        for (i, (minimizer_pos, minimizer)) in minimizer_it.enumerate() {
+        for (i, minimizer_pos) in minimizer_it.enumerate() {
             let same_minimizer = minimizer_pos == last_minimizer_pos;
             last_minimizer_pos = minimizer_pos;
 
             // Update the range of offsets for the current minimizer if it changed.
             if !same_minimizer {
+                let minimizer = query.sub_slice(minimizer_pos, self.minimizer.k()).to_word() as u64;
+
                 let hash: usize = self.phf.hash(minimizer).unwrap();
                 let offsets_start = self.sizes.get(hash) as usize;
                 let offsets_end = self.sizes.get(hash + 1) as usize;
