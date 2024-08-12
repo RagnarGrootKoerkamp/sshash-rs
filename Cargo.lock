@@ -1504,6 +1504,7 @@ dependencies = [
  "needletail",
  "ptr_hash",
  "rand",
+ "rayon",
  "size",
  "sux",
 ]

@@ -1,6 +1,7 @@
 #![feature(array_chunks)]
 use itertools::Itertools;
 use minimizers::par::packed::{IntoBpIterator, Packed};
+use rayon::prelude::*;
 use std::{cmp::Ordering, ops::Range};
 use sux::{
     bit_field_vec,
@@ -40,7 +41,7 @@ impl<T: ptr_hash::KeyT> Phf<T> for ptr_hash::PtrHash<T> {
     }
 }
 
-pub trait Minimizer {
+pub trait Minimizer: Sync {
     fn minimizer_one(&self, window: impl IntoBpIterator) -> usize; // position of mini
     fn minimizers(&self, seq: impl IntoBpIterator) -> impl Iterator<Item = usize>; // absolute positions of minis
     fn k(&self) -> usize;
@@ -50,7 +51,7 @@ pub trait Minimizer {
     }
 }
 
-pub trait BpStorage: Default {
+pub trait BpStorage: Default + Sync {
     type BpSlice<'a>: IntoBpIterator
     where
         Self: 'a;
@@ -241,23 +242,23 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
         let start = std::time::Instant::now();
         eprintln!("{:.1?}: minimizers..", start.elapsed());
         let mut minis = ranges
-            .into_iter()
-            .flat_map(
+            .into_par_iter()
+            .flat_map_iter(
                 #[inline(always)]
                 |range| {
                     minimizer
                         .minimizers(seq.slice(range.clone()))
+                        .dedup()
                         .map(move |pos| pos + range.start)
                 },
             )
-            .dedup()
             .map(|pos| {
                 let val = seq.slice(pos..pos + minimizer.k()).to_word() as u64;
                 (pos, val)
             })
-            .collect_vec();
+            .collect::<Vec<_>>();
         eprintln!("{:.1?}: sort..", start.elapsed());
-        minis.sort_by_key(|x| x.1);
+        minis.par_sort_by_key(|x| x.1);
         eprintln!("{:.1?}: uniq minis..", start.elapsed());
         // Todo: is passing an iterator to the phf builder sufficient?
         let uniq_mini_vals = minis.iter().map(|x| x.1).dedup().collect_vec();
@@ -267,9 +268,8 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
         let mut sizes = vec![0; phf.max() + 1];
         eprintln!("{:.1?}: fill sizes..", start.elapsed());
         for (mini_val, chunk) in minis.iter().chunk_by(|x| x.1).into_iter() {
-            if let Some(hash) = phf.hash(mini_val) {
-                sizes[hash] = chunk.count();
-            }
+            let hash = phf.hash(mini_val).unwrap();
+            sizes[hash] = chunk.count();
         }
         eprintln!("{:.1?}: accumulate sizes..", start.elapsed());
         sizes = sizes

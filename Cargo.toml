@@ -16,6 +16,7 @@ size = "0.4.1"
 sux = { version = "0.4.1", git = "https://github.com/vigna/sux-rs" }
 ptr_hash = { git = "https://github.com/RagnarGrootKoerkamp/ptrhash" }
 minimizers = { git = "https://github.com/RagnarGrootKoerkamp/minimizers" }
+rayon = "1.10.0"
 
 [dev-dependencies]
 needletail = "0.5.1"
