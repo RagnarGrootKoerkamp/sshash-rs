@@ -1,3 +1,4 @@
+#![feature(array_chunks)]
 use itertools::Itertools;
 use minimizers::par::packed::{IntoBpIterator, Packed};
 use std::{cmp::Ordering, ops::Range};
@@ -657,7 +658,6 @@ mod test {
         let Ok(mut reader) = needletail::parse_fastx_file("human-genome.fa") else {
             panic!("Did not find human-genome.fa. Add/symlink it to test runtime on it.");
         };
-        let mut i = 0;
         let mut seq = PackedVec::default();
         let mut ranges = vec![];
         let mut pack_buf = vec![];
@@ -671,10 +671,6 @@ mod test {
             };
             ranges.push(seq.push(packed));
             pack_buf.clear();
-            if i % 32 == 0 {
-                eprint!("Packed len {}\r", size::Size::from_bytes(seq.seq.len()));
-            }
-            i += 1;
         }
         eprintln!("Packing took {:?}", start.elapsed());
 
@@ -690,15 +686,40 @@ mod test {
         sshash.print_size();
     }
 
+    #[test]
+    fn test_pack() {
+        for n in 0..=128 {
+            let seq = (0..n)
+                .map(|_| b"ACGT"[rand::random::<u8>() as usize % 4])
+                .collect_vec();
+            let mut packed_1 = vec![];
+            let len1 = naive::pack(&seq, &mut packed_1);
+            let mut packed_2 = vec![];
+            let len2 = pack(&seq, &mut packed_2);
+            assert_eq!(len1, len2);
+            assert_eq!(packed_1, packed_2);
+        }
+    }
+
     fn pack(seq: &[u8], packed: &mut Vec<u8>) -> usize {
-        let mut packed_byte = 0;
+        let mut chunks = seq.array_chunks();
+
         let mut packed_len = 0;
-        for &base in seq {
+        for chunk in chunks.by_ref() {
+            let word = u64::from_ne_bytes(*chunk);
+            let packed_byte = unsafe { std::arch::x86_64::_pext_u64(word, 0x0606060606060606) };
+            packed.push(packed_byte as u8);
+            packed.push((packed_byte >> 8) as u8);
+            packed_len += 8;
+        }
+
+        let mut packed_byte = 0;
+        for &base in chunks.remainder() {
             packed_byte |= match base {
                 b'a' | b'A' => 0,
                 b'c' | b'C' => 1,
-                b'g' | b'G' => 2,
-                b't' | b'T' => 3,
+                b'g' | b'G' => 3,
+                b't' | b'T' => 2,
                 b'\r' | b'\n' => continue,
                 _ => panic!(),
             } << (packed_len * 2);
