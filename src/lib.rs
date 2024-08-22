@@ -6,7 +6,6 @@ use std::{cmp::Ordering, ops::Range};
 use sux::{
     bit_field_vec,
     dict::EliasFano,
-    rank_sel::SelectAdaptConst,
     traits::{BitFieldSlice, BitFieldSliceCore, BitFieldSliceMut, IndexedSeq},
 };
 
@@ -200,7 +199,7 @@ pub struct SsHash<H: Phf<u64>, M: Minimizer, P: BpStorage> {
     endpoints: Vec<usize>, // TODO EF?
     num_uniq_minis: usize,
     phf: H,
-    sizes: sux::dict::EliasFano<SelectAdaptConst<sux::bits::BitVec<Box<[usize]>>>>,
+    sizes: sux::dict::elias_fano::EfSeq,
     offsets: sux::bits::BitFieldVec,
 }
 
@@ -340,7 +339,7 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
 
         eprintln!("{:.1?}: packed offsets..", start.elapsed());
         let offset_bits = seq.get().len().ilog2() as usize + 1;
-        let mut packed_offsets = bit_field_vec![offset_bits; minis.len(); 0];
+        let mut packed_offsets = bit_field_vec![offset_bits => 0; mini_vals.len()];
         for (i, o) in offsets.into_iter().enumerate() {
             packed_offsets.set(i, o);
         }
@@ -351,8 +350,7 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
             sizes_ef.push(size);
         }
 
-        let sizes = sizes_ef.build();
-        let sizes = unsafe { sizes.map_high_bits(SelectAdaptConst::<_, _>::new) };
+        let sizes = sizes_ef.build_with_seq();
 
         eprintln!("{:.1?}: done.", start.elapsed());
 
