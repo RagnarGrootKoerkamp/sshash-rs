@@ -16,6 +16,8 @@ sux = "0.4.4"
 ptr_hash = { git = "https://github.com/RagnarGrootKoerkamp/ptrhash" }
 minimizers = { git = "https://github.com/RagnarGrootKoerkamp/minimizers", default-features = false }
 rayon = "1.10.0"
+serde = { version = "1.0.210", features = ["derive"] }
+epserde = "0.6.1"
 
 [dev-dependencies]
 needletail = "0.5.1"

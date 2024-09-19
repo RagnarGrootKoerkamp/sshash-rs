@@ -1,3 +1,10 @@
+// TODO: sparse index
+// TODO: construction time/memory benchmarks
+// TODO: query throughput benchmarks
+// TODO: External memory construction for offsets fs
+// TODO: Use cacheline-ef?
+
+use epserde::{deser::DeserializeInner, ser::SerializeInner, Epserde};
 use itertools::{repeat_n, Itertools};
 use minimizers::simd::packed::{IntoBpIterator, Packed};
 use rayon::prelude::*;
@@ -39,7 +46,7 @@ impl<T: ptr_hash::KeyT> Phf<T> for ptr_hash::PtrHash<T> {
     }
 }
 
-pub trait Minimizer: Sync {
+pub trait Minimizer: Sync + SerializeInner + DeserializeInner {
     fn minimizer_one(&self, window: impl IntoBpIterator) -> usize; // position of mini
     fn minimizers(&self, seq: impl IntoBpIterator) -> impl Iterator<Item = usize>; // absolute positions of minis
     fn k(&self) -> usize;
@@ -49,7 +56,7 @@ pub trait Minimizer: Sync {
     }
 }
 
-pub trait BpStorage: Default + Sync {
+pub trait BpStorage: Default + Sync + SerializeInner + DeserializeInner {
     type BpSlice<'a>: IntoBpIterator
     where
         Self: 'a;
@@ -108,7 +115,7 @@ impl BpStorage for Vec<u8> {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Epserde)]
 pub struct PackedVec {
     pub seq: Vec<u8>,
     pub len: usize,
@@ -164,6 +171,9 @@ impl BpStorage for PackedVec {
     }
 }
 
+#[derive(Epserde, Copy, Clone)]
+#[repr(C)]
+#[zero_copy]
 pub struct NtMinimizer {
     pub k: usize,
     pub w: usize,
@@ -187,11 +197,7 @@ impl Minimizer for NtMinimizer {
         self.w
     }
 }
-
-// TODO: sparse index
-// TODO: construction time/memory benchmarks
-// TODO: query throughput benchmarks
-// TODO: External memory construction for offsets fs
+#[derive(Epserde)]
 pub struct SsHash<H: Phf<u64>, M: Minimizer, P: BpStorage> {
     minimizer: M,
     seqs: P,

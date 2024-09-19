@@ -227,14 +227,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cacheline-ef"
-version = "0.1.0"
-source = "git+https://github.com/RagnarGrootKoerkamp/cacheline-ef#8ba59d6ea4bf3df1bb4e00cea636b422f6ca460f"
-dependencies = [
- "common_traits 0.11.0",
-]
-
-[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1542,7 +1534,7 @@ checksum = "9fed904c7fb2856d868b92464fc8fa597fce366edea1a9cbfaa8cb5fe080bd6d"
 name = "sshash-rs"
 version = "0.1.0"
 dependencies = [
- "cacheline-ef",
+ "epserde",
  "fxhash",
  "itertools 0.13.0",
  "minimizers",
@@ -1550,6 +1542,7 @@ dependencies = [
  "ptr_hash",
  "rand",
  "rayon",
+ "serde",
  "size",
  "sux",
 ]

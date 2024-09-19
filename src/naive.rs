@@ -42,6 +42,9 @@ impl<T: Hash + Eq + Sync> Phf<T> for NaivePhf<T> {
     }
 }
 
+#[derive(Epserde, Copy, Clone)]
+#[repr(C)]
+#[zero_copy]
 pub struct NaiveMinimizer {
     pub k: usize,
     pub w: usize,
