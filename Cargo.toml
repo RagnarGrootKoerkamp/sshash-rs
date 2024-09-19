@@ -13,7 +13,6 @@ fxhash = "0.2.1"
 itertools = "0.13.0"
 size = "0.4.1"
 sux = "0.4.4"
-cacheline-ef = { git = "https://github.com/RagnarGrootKoerkamp/cacheline-ef" }
 ptr_hash = { git = "https://github.com/RagnarGrootKoerkamp/ptrhash" }
 minimizers = { git = "https://github.com/RagnarGrootKoerkamp/minimizers", default-features = false }
 rayon = "1.10.0"
