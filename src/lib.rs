@@ -1,6 +1,6 @@
 #![feature(array_chunks, iter_repeat_n)]
 use itertools::Itertools;
-use minimizers::par::packed::{IntoBpIterator, Packed};
+use minimizers::simd::packed::{IntoBpIterator, Packed};
 use rayon::prelude::*;
 use std::{cmp::Ordering, ops::Range};
 use sux::{
@@ -172,12 +172,12 @@ pub struct NtMinimizer {
 
 impl Minimizer for NtMinimizer {
     fn minimizer_one(&self, window: impl IntoBpIterator) -> usize {
-        minimizers::par::minimizer::minimizer_window::<false>(window, self.k)
+        minimizers::simd::minimizer::minimizer_window_naive::<false>(window, self.k)
     }
 
     fn minimizers(&self, seq: impl IntoBpIterator) -> impl Iterator<Item = usize> {
-        minimizers::par::minimizer::minimizer_scalar_it::<false>(seq, self.k, self.w)
-            .map(|pos| pos as usize)
+        minimizers::simd::minimizer::minimizer_simd_it::<false>(seq, self.k, self.w)
+            .map(|x| x as usize)
     }
 
     fn k(&self) -> usize {
@@ -339,7 +339,7 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
 
         eprintln!("{:.1?}: packed offsets..", start.elapsed());
         let offset_bits = seq.get().len().ilog2() as usize + 1;
-        let mut packed_offsets = bit_field_vec![offset_bits => 0; mini_vals.len()];
+        let mut packed_offsets = bit_field_vec![offset_bits => 0; minis.len()];
         for (i, o) in offsets.into_iter().enumerate() {
             packed_offsets.set(i, o);
         }

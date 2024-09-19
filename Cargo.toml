@@ -9,13 +9,13 @@ lto = "thin"
 incremental = true
 
 [dependencies]
-cacheline-ef = { path = "../cacheline-ef" }
 fxhash = "0.2.1"
 itertools = "0.13.0"
 size = "0.4.1"
-sux = { version = "0.4.1", git = "https://github.com/vigna/sux-rs" }
+sux = "0.4.4"
+cacheline-ef = { git = "https://github.com/RagnarGrootKoerkamp/cacheline-ef" }
 ptr_hash = { git = "https://github.com/RagnarGrootKoerkamp/ptrhash" }
-minimizers = { git = "https://github.com/RagnarGrootKoerkamp/minimizers" }
+minimizers = { git = "https://github.com/RagnarGrootKoerkamp/minimizers", default-features = false }
 rayon = "1.10.0"
 
 [dev-dependencies]
