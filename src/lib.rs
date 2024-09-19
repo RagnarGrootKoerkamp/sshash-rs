@@ -1,5 +1,5 @@
-#![feature(array_chunks, iter_repeat_n)]
-use itertools::Itertools;
+#![feature(array_chunks)]
+use itertools::{repeat_n, Itertools};
 use minimizers::simd::packed::{IntoBpIterator, Packed};
 use rayon::prelude::*;
 use std::{cmp::Ordering, ops::Range};
@@ -314,7 +314,7 @@ impl<H: Phf<u64>, M: Minimizer, P: BpStorage> SsHash<H, M, P> {
             .flat_map(|(idx, range)| {
                 let extra = idx - pos;
                 pos = *idx + 1;
-                std::iter::repeat_n(0, extra).chain(std::iter::once(range.len()))
+                repeat_n(0, extra).chain(std::iter::once(range.len()))
             })
             .collect::<Vec<_>>();
         while sizes.len() <= phf.max() {
