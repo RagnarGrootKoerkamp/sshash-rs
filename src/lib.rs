@@ -1,4 +1,3 @@
-#![feature(array_chunks)]
 use itertools::{repeat_n, Itertools};
 use minimizers::simd::packed::{IntoBpIterator, Packed};
 use rayon::prelude::*;
@@ -784,10 +783,10 @@ mod test {
     }
 
     fn pack(seq: &[u8], packed: &mut Vec<u8>) -> usize {
-        let mut chunks = seq.array_chunks();
-
         let mut packed_len = 0;
-        for chunk in chunks.by_ref() {
+        let last = seq.len() / 8 * 8;
+        for i in (0..last).step_by(8) {
+            let chunk = &seq[i..i + 8].try_into().unwrap();
             let word = u64::from_ne_bytes(*chunk);
             let packed_byte = unsafe { std::arch::x86_64::_pext_u64(word, 0x0606060606060606) };
             packed.push(packed_byte as u8);
@@ -796,7 +795,7 @@ mod test {
         }
 
         let mut packed_byte = 0;
-        for &base in chunks.remainder() {
+        for &base in &seq[last..] {
             packed_byte |= match base {
                 b'a' | b'A' => 0,
                 b'c' | b'C' => 1,
