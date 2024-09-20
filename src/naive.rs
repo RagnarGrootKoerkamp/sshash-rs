@@ -51,11 +51,11 @@ pub struct NaiveMinimizer {
 }
 
 impl Minimizer for NaiveMinimizer {
-    fn minimizer_one(&self, window: impl IntoBpIterator) -> usize {
+    fn minimizer_one(&self, window: impl Seq) -> usize {
         assert_eq!(window.len(), self.l());
         (0..self.w)
             .map(|i| {
-                let kmer = window.sub_slice(i, self.k).to_word();
+                let kmer = window.slice(i..i + self.k).to_word();
                 let hash = fxhash::hash64(&kmer);
                 (i, hash)
             })
@@ -64,9 +64,9 @@ impl Minimizer for NaiveMinimizer {
             .0
     }
 
-    fn minimizers(&self, text: impl IntoBpIterator) -> impl Iterator<Item = usize> {
+    fn minimizers(&self, text: impl Seq) -> impl Iterator<Item = usize> {
         (0..text.len() - self.l() + 1).map(move |i| {
-            let window = text.sub_slice(i, self.l());
+            let window = text.slice(i..i + self.l());
             i + self.minimizer_one(window)
         })
     }
@@ -78,28 +78,4 @@ impl Minimizer for NaiveMinimizer {
     fn w(&self) -> usize {
         self.w
     }
-}
-
-pub fn pack(seq: &[u8], packed: &mut Vec<u8>) -> usize {
-    let mut packed_byte = 0;
-    let mut packed_len = 0;
-    for &base in seq {
-        packed_byte |= match base {
-            b'a' | b'A' => 0,
-            b'c' | b'C' => 1,
-            b'g' | b'G' => 3,
-            b't' | b'T' => 2,
-            b'\r' | b'\n' => continue,
-            _ => panic!(),
-        } << (packed_len * 2);
-        packed_len += 1;
-        if packed_len % 4 == 0 {
-            packed.push(packed_byte);
-            packed_byte = 0;
-        }
-    }
-    if packed_len % 4 != 0 {
-        packed.push(packed_byte);
-    }
-    packed_len
 }

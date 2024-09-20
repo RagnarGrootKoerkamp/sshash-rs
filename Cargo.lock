@@ -605,12 +605,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "fnv"
-version = "1.0.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
-
-[[package]]
 name = "funty"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -641,16 +635,6 @@ name = "gimli"
 version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32085ea23f3234fc7846555e85283ba4de91e21016dc0455a16286d87a292d64"
-
-[[package]]
-name = "good_lp"
-version = "1.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3198bd13dea84c76a64621d6ee8ee26a4960a9a0d538eca95ca8f1320a469ac9"
-dependencies = [
- "fnv",
- "lp-solvers",
-]
 
 [[package]]
 name = "half"
@@ -853,16 +837,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
 
 [[package]]
-name = "lp-solvers"
-version = "1.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b248cbb1ff9b0bd49235e1b8103e1146d63f57b50ddabb69ce95e7a18055d31e"
-dependencies = [
- "tempfile",
- "xml-rs",
-]
-
-[[package]]
 name = "lzma-sys"
 version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -935,24 +909,19 @@ checksum = "3ba553cb19e2acbc54baa16faef215126243fe45e53357a3b2e9f4ebc7b0506c"
 [[package]]
 name = "minimizers"
 version = "0.1.0"
-source = "git+https://github.com/RagnarGrootKoerkamp/minimizers#a818ecef138566d57b927d60055061452f04f941"
+source = "git+https://github.com/RagnarGrootKoerkamp/minimizers#30bde51188479b7e889243933ffeaeddef7c5164"
 dependencies = [
  "clap",
  "color-backtrace",
- "colored",
  "ctor",
- "fxhash",
- "good_lp",
  "itertools 0.12.1",
- "nthash",
  "num",
+ "packed-seq",
  "rand",
  "rand_chacha 0.9.0-alpha.2",
  "rayon",
  "serde",
- "serde_derive",
  "serde_json",
- "wide",
  "wyhash",
 ]
 
@@ -1034,15 +1003,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8a3895c6391c39d7fe7ebc444a87eb2991b2a0bc718fdabd071eec617fc68e4"
 dependencies = [
  "winapi",
-]
-
-[[package]]
-name = "nthash"
-version = "0.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "752ed59e65983a1ba3166fcdf684107b9f43913a937d3250aa98f26ce586c2d0"
-dependencies = [
- "thiserror",
 ]
 
 [[package]]
@@ -1158,6 +1118,16 @@ name = "oorandom"
 version = "11.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b410bbe7e14ab526a0e86877eb47c6996a2bd7746f027ba551028c925390e4e9"
+
+[[package]]
+name = "packed-seq"
+version = "0.1.0"
+source = "git+https://github.com/rust-seq/packed-seq#fd6516ea18a79ddf4f6941f9a27da399b3a79eb0"
+dependencies = [
+ "epserde",
+ "rand",
+ "wide",
+]
 
 [[package]]
 name = "partition"
@@ -1539,6 +1509,7 @@ dependencies = [
  "itertools 0.13.0",
  "minimizers",
  "needletail",
+ "packed-seq",
  "ptr_hash",
  "rand",
  "rayon",
@@ -2052,12 +2023,6 @@ checksum = "05f360fc0b24296329c78fda852a1e9ae82de9cf7b27dae4b7f62f118f77b9ed"
 dependencies = [
  "tap",
 ]
-
-[[package]]
-name = "xml-rs"
-version = "0.8.22"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af4e2e2f7cba5a093896c1e150fbfe177d1883e7448200efb81d40b9d339ef26"
 
 [[package]]
 name = "xxhash-rust"

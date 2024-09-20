@@ -15,6 +15,7 @@ size = "0.4.1"
 sux = "0.4.4"
 ptr_hash = { git = "https://github.com/RagnarGrootKoerkamp/ptrhash" }
 minimizers = { git = "https://github.com/RagnarGrootKoerkamp/minimizers", default-features = false }
+packed-seq = { git = "https://github.com/rust-seq/packed-seq" }
 rayon = "1.10.0"
 serde = { version = "1.0.210", features = ["derive"] }
 epserde = "0.6.1"
